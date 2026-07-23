@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    NOT part of the platform (services/, apps/) and NOT a business job like
+    flink-jobs/task-stats-job - this is Flink cluster infrastructure: a
+    JdbcDialect that teaches Flink's official flink-connector-jdbc how to
+    talk to ClickHouse, so "SQL 流作业" (realtime-compute-service's SQL-Gateway
+    -submitted jobs) can declare a 'connector'='jdbc' sink pointed at
+    ClickHouse. Official flink-connector-jdbc ships MySQL/Postgres/Derby/
+    Oracle/SqlServer/Db2/OceanBase/CrateDB/Trino dialects but no ClickHouse
+    one; community ClickHouse connectors were evaluated and rejected
+    (unstable main branch, known silent-failure bug, not on Maven Central).
+
+    Standalone build like task-stats-job, for the same reason: this jar
+    gets shaded into an uber jar and dropped into the Flink cluster's own
+    lib/ directory (docker/bigdata/docker-compose.yml), which has a
+    completely different classpath than any Spring Boot service here.
+
+    ClickHouse has no real UPSERT/MERGE (OLAP columnar store), so this
+    dialect's getUpsertStatement() just hands back a plain INSERT statement
+    (see ClickHouseDialect.java for why - returning Optional.empty(), same as
+    the official DerbyDialect, crashes Flink's JDBC sink at checkpoint time
+    once a PRIMARY KEY is declared on the sink table). Duplicate-key inserts
+    aren't a limitation to work around: this project's existing ClickHouse-
+    write idiom already assumes append-only writes and handles idempotency
+    at the storage layer instead (ReplacingMergeTree + an updated_at version
+    column + reading with FINAL - see docker/bigdata/README.md's "Flink →
+    ClickHouse 写入的幂等模式" and task_execution_stats/TaskStatsJob.java).
+  -->
+
+  <groupId>com.company.flinkconnectors</groupId>
+  <artifactId>clickhouse-jdbc-dialect</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <flink.version>1.19.3</flink.version>
+    <!-- matches the flink:1.19 (-> 1.19.3) cluster in docker/bigdata/docker-compose.yml -->
+  </properties>
+
+  <dependencies>
+    <!-- Already on the Flink cluster's classpath (flink-dist bundles
+         flink-table-api-java-uber, which flink-connector-jdbc's AbstractDialect/
+         RowType/LogicalTypeRoot come from) - compiled against, not bundled,
+         same reasoning as task-stats-job's flink-streaming-java/flink-clients. -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-table-common</artifactId>
+      <version>${flink.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-table-api-java</artifactId>
+      <version>${flink.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Not on the cluster classpath - must be shaded into the connector jar -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-jdbc</artifactId>
+      <version>3.2.0-1.19</version>
+    </dependency>
+    <dependency>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-jdbc</artifactId>
+      <version>0.9.0</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>clickhouse-jdbc-dialect</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <transformers>
+                <!-- Mandatory, not optional: without this, flink-connector-jdbc's
+                     own META-INF/services/...JdbcDialectFactory (listing MySQL/
+                     Postgres/Derby/Oracle/...) and this module's own SPI file
+                     (listing ClickHouseDialectFactory) would collide during
+                     shading - the shade plugin keeps only one verbatim instead
+                     of merging, silently dropping every other dialect from the
+                     one cluster-wide jar that now provides all of them. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

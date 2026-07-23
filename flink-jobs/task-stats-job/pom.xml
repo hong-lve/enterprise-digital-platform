@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    This is NOT part of the platform (services/, apps/) - it's an example of
+    the kind of business job a user submits through data-platform-web's
+    Flink 流作�?page. The platform only manages the lifecycle of whatever
+    jar you point it at; it doesn't ship the business logic itself. This one
+    exists to prove the CDC -> Kafka -> Flink -> ClickHouse chain actually
+    works end to end, consuming the CDC topic for data_platform_db.data_task_log
+    (data-platform-service's task execution history) and writing a rolling
+    count of task results into ClickHouse.
+
+    Standalone build, deliberately not a module of any service's pom - a
+    Flink job jar needs its connector dependencies SHADED into an uber jar
+    (the cluster classpath only has Flink core, unlike a Spring Boot service
+    where shading caused a real conflict earlier in this project - here each
+    job runs in its own classloader, so shading is the correct, standard way
+    to package a Flink job, not something to avoid).
+  -->
+
+  <groupId>com.company.flinkjobs</groupId>
+  <artifactId>task-stats-job</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <flink.version>1.19.3</flink.version>
+    <!-- matches the flink:1.19 (-> 1.19.3) cluster in docker/bigdata/docker-compose.yml -->
+  </properties>
+
+  <dependencies>
+    <!-- Already on the Flink cluster's classpath - compiled against, not bundled -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-streaming-java</artifactId>
+      <version>${flink.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-clients</artifactId>
+      <version>${flink.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Not on the cluster classpath - must be shaded into the job jar -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-kafka</artifactId>
+      <version>3.3.0-1.19</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-jdbc</artifactId>
+      <version>0.9.0</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>task-stats-job</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.company.flinkjobs.taskstats.TaskStatsJob</mainClass>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -1,0 +1,40 @@
+# Maven build output (data-platform-service + every flink-jobs/flink-connectors module)
+**/target/
+
+# Node / Vite (data-platform-web)
+**/node_modules/
+data-platform-web/dist/
+data-platform-web/.vite/
+*.tsbuildinfo
+
+# Vendored third-party binary jars for the Flink image - either rebuilt from
+# flink-connectors/* (already in this repo) or downloaded from their
+# upstream Maven/release coordinates; not meant to be tracked as binaries.
+# See docker/bigdata/README.md for how to (re)populate this directory.
+docker/bigdata/flink-lib/*.jar
+
+# Runtime upload storage (data-platform-service's local jar-storage fallback) - generated data, not source.
+data-platform-service/uploads/
+
+# Local secrets / environment overrides - never commit real credentials.
+.env
+.env.*
+*.local.yml
+
+# Logs
+*.log
+logs/
+
+# IDE / editor state
+.idea/
+.vscode/
+*.iml
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local AI coding tool state (not project source)
+.agents/
+.claude/
+.codex/
