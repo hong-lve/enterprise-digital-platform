@@ -1,0 +1,50 @@
+name: CI
+
+# Placeholder pipeline: exercises the same build/test commands used locally
+# throughout this project (mvn test for the Java modules, npm run build for
+# the frontend). Won't actually run until this repo has a GitHub remote to
+# push to - the point right now is establishing the pattern so a future
+# 'git remote add origin ...' + push makes it live with no further changes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: data-platform-service (mvn test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      # cdc-mirror-common is a plain dependency of the sink modules but isn't
+      # on Maven Central, so it needs installing to the local repo first -
+      # same order a fresh clone's build would need.
+      - name: Install flink-jobs/cdc-mirror-common
+        run: mvn -q -f flink-jobs/cdc-mirror-common/pom.xml install -DskipTests
+      - name: Test cdc-mirror-common
+        run: mvn -q -f flink-jobs/cdc-mirror-common/pom.xml test
+      - name: Test data-platform-service
+        run: mvn -q -f data-platform-service/pom.xml test
+
+  frontend:
+    name: data-platform-web (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: data-platform-web/package-lock.json
+      - name: Install dependencies
+        working-directory: data-platform-web
+        run: npm ci
+      - name: Type-check + build
+        working-directory: data-platform-web
+        run: npm run build
