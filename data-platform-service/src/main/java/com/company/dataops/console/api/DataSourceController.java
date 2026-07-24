@@ -3,11 +3,13 @@ package com.company.dataops.console.api;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.common.PageResult;
 import com.company.dataops.console.entity.DataSourceEntity;
 import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
+import com.company.dataops.console.service.approval.ChangeApprovalService;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
 import com.company.dataops.console.service.datasource.RedisConnectionService;
 import jakarta.validation.Valid;
@@ -32,12 +34,15 @@ public class DataSourceController {
     private final DataSourceConnectionService connectionService;
     private final RedisConnectionService redisConnectionService;
     private final EnvironmentGuard environmentGuard;
+    private final ChangeApprovalService changeApprovalService;
 
-    public DataSourceController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, RedisConnectionService redisConnectionService, EnvironmentGuard environmentGuard) {
+    public DataSourceController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, RedisConnectionService redisConnectionService, EnvironmentGuard environmentGuard, ChangeApprovalService changeApprovalService) {
         this.dataSourceMapper = dataSourceMapper;
         this.connectionService = connectionService;
         this.redisConnectionService = redisConnectionService;
         this.environmentGuard = environmentGuard;
+        this.changeApprovalService = changeApprovalService;
+        changeApprovalService.register(ChangeApprovalService.ActionType.DATA_SOURCE_DELETE, this::applyDelete);
     }
 
     private boolean isRedis(DataSourceEntity dataSource) {
@@ -102,11 +107,20 @@ public class DataSourceController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('realtime:datasource:delete')")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
+    public ApiResponse<ActionResult> delete(@PathVariable Long id) {
         DataSourceEntity dataSource = requireDataSource(id);
         environmentGuard.requirePermissionForEnvironment(dataSource.getEnvironment());
+        ChangeApprovalService.GateResult gate = changeApprovalService.gate(
+            ChangeApprovalService.ActionType.DATA_SOURCE_DELETE, id, dataSource.getEnvironment(), "数据源: " + dataSource.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyDelete(id);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyDelete(Long id) {
         dataSourceMapper.deleteById(id);
-        return ApiResponse.ok();
     }
 
     @PostMapping("/{id}/test")

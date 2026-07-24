@@ -3,12 +3,14 @@ package com.company.dataops.console.api;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.common.PageResult;
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.RealtimeAlertService;
+import com.company.dataops.console.service.approval.ChangeApprovalService;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,6 +34,7 @@ public class FlinkStreamJobController {
     private final FlinkStreamSubmissionClient flinkStreamSubmissionClient;
     private final RealtimeAlertService realtimeAlertService;
     private final EnvironmentGuard environmentGuard;
+    private final ChangeApprovalService changeApprovalService;
     private final String frontendUrl;
 
     public FlinkStreamJobController(
@@ -39,13 +42,17 @@ public class FlinkStreamJobController {
         FlinkStreamSubmissionClient flinkStreamSubmissionClient,
         RealtimeAlertService realtimeAlertService,
         EnvironmentGuard environmentGuard,
+        ChangeApprovalService changeApprovalService,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.flinkStreamJobMapper = flinkStreamJobMapper;
         this.flinkStreamSubmissionClient = flinkStreamSubmissionClient;
         this.realtimeAlertService = realtimeAlertService;
         this.environmentGuard = environmentGuard;
+        this.changeApprovalService = changeApprovalService;
         this.frontendUrl = frontendUrl;
+        changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_STREAM_JOB_DELETE, this::applyDelete);
+        changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_STREAM_JOB_STOP, this::applyStop);
     }
 
     @GetMapping
@@ -97,9 +104,20 @@ public class FlinkStreamJobController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('realtime:flink:delete')")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
+    public ApiResponse<ActionResult> delete(@PathVariable Long id) {
         FlinkStreamJobEntity job = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
+        ChangeApprovalService.GateResult gate = changeApprovalService.gate(
+            ChangeApprovalService.ActionType.FLINK_STREAM_JOB_DELETE, id, job.getEnvironment(), "Flink 流作业: " + job.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyDelete(id);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyDelete(Long id) {
+        FlinkStreamJobEntity job = requireJob(id);
         if ("RUNNING".equals(job.getStatus()) && job.getFlinkJobId() != null) {
             try {
                 flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
@@ -108,7 +126,6 @@ public class FlinkStreamJobController {
             }
         }
         flinkStreamJobMapper.deleteById(id);
-        return ApiResponse.ok();
     }
 
     @PostMapping("/{id}/start")
@@ -170,17 +187,27 @@ public class FlinkStreamJobController {
 
     @PostMapping("/{id}/stop")
     @PreAuthorize("hasAuthority('realtime:flink:stop')")
-    public ApiResponse<FlinkStreamJobEntity> stop(@PathVariable Long id) {
+    public ApiResponse<ActionResult> stop(@PathVariable Long id) {
         FlinkStreamJobEntity job = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
         if (job.getFlinkJobId() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "还没有启动过，无需停止");
         }
+        ChangeApprovalService.GateResult gate = changeApprovalService.gate(
+            ChangeApprovalService.ActionType.FLINK_STREAM_JOB_STOP, id, job.getEnvironment(), "Flink 流作业: " + job.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyStop(id);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyStop(Long id) {
+        FlinkStreamJobEntity job = requireJob(id);
         String savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
         job.setStatus("CANCELED");
         job.setSavepointPath(savepointPath);
         flinkStreamJobMapper.updateById(job);
-        return ApiResponse.ok(job);
     }
 
     // Separate from update()'s existing savepointPath=null clear (which only

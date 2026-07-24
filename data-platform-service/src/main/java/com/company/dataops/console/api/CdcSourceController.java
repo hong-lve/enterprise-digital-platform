@@ -3,6 +3,7 @@ package com.company.dataops.console.api;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.common.PageResult;
 import com.company.dataops.console.entity.CdcSourceEntity;
@@ -11,6 +12,7 @@ import com.company.dataops.console.mapper.CdcSourceMapper;
 import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.RealtimeAlertService;
+import com.company.dataops.console.service.approval.ChangeApprovalService;
 import com.company.dataops.console.service.kafka.CdcRecoveryTracker;
 import com.company.dataops.console.service.flink.SinkTableDdlBuilder;
 import com.company.dataops.console.service.kafka.CdcTableSchemaService;
@@ -44,6 +46,7 @@ public class CdcSourceController {
     private final CdcRecoveryTracker cdcRecoveryTracker;
     private final CdcTableSchemaService cdcTableSchemaService;
     private final SinkTableDdlBuilder sinkTableDdlBuilder;
+    private final ChangeApprovalService changeApprovalService;
     private final String frontendUrl;
 
     public CdcSourceController(
@@ -56,6 +59,7 @@ public class CdcSourceController {
         CdcRecoveryTracker cdcRecoveryTracker,
         CdcTableSchemaService cdcTableSchemaService,
         SinkTableDdlBuilder sinkTableDdlBuilder,
+        ChangeApprovalService changeApprovalService,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.cdcSourceMapper = cdcSourceMapper;
@@ -67,7 +71,10 @@ public class CdcSourceController {
         this.cdcRecoveryTracker = cdcRecoveryTracker;
         this.cdcTableSchemaService = cdcTableSchemaService;
         this.sinkTableDdlBuilder = sinkTableDdlBuilder;
+        this.changeApprovalService = changeApprovalService;
         this.frontendUrl = frontendUrl;
+        changeApprovalService.register(ChangeApprovalService.ActionType.CDC_SOURCE_DELETE, this::applyDelete);
+        changeApprovalService.register(ChangeApprovalService.ActionType.CDC_SOURCE_STOP, this::applyStop);
     }
 
     @GetMapping
@@ -119,9 +126,20 @@ public class CdcSourceController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('realtime:cdc:delete')")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
+    public ApiResponse<ActionResult> delete(@PathVariable Long id) {
         CdcSourceEntity source = requireSource(id);
         environmentGuard.requirePermissionForEnvironment(source.getEnvironment());
+        ChangeApprovalService.GateResult gate = changeApprovalService.gate(
+            ChangeApprovalService.ActionType.CDC_SOURCE_DELETE, id, source.getEnvironment(), "CDC 数据源: " + source.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyDelete(id);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyDelete(Long id) {
+        CdcSourceEntity source = requireSource(id);
         if (source.getConnectorName() != null) {
             try {
                 kafkaConnectClient.delete(source.getConnectorName());
@@ -130,7 +148,6 @@ public class CdcSourceController {
             }
         }
         cdcSourceMapper.deleteById(id);
-        return ApiResponse.ok();
     }
 
     @PostMapping("/{id}/start")
@@ -190,19 +207,29 @@ public class CdcSourceController {
 
     @PostMapping("/{id}/stop")
     @PreAuthorize("hasAuthority('realtime:cdc:stop')")
-    public ApiResponse<CdcSourceEntity> stop(@PathVariable Long id) {
+    public ApiResponse<ActionResult> stop(@PathVariable Long id) {
         CdcSourceEntity source = requireSource(id);
         environmentGuard.requirePermissionForEnvironment(source.getEnvironment());
         if (source.getConnectorName() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "还没有启动过，无需停止");
         }
+        ChangeApprovalService.GateResult gate = changeApprovalService.gate(
+            ChangeApprovalService.ActionType.CDC_SOURCE_STOP, id, source.getEnvironment(), "CDC 数据源: " + source.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyStop(id);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyStop(Long id) {
+        CdcSourceEntity source = requireSource(id);
         kafkaConnectClient.pause(source.getConnectorName());
         source.setStatus("PAUSED");
         cdcSourceMapper.updateById(source);
         // Pausing is an intentional non-failure state - don't leave a stale
         // recovery-attempt count hanging around for it.
         cdcRecoveryTracker.forget(source.getId());
-        return ApiResponse.ok(source);
     }
 
     @GetMapping("/{id}/status")

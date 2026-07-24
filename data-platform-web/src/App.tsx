@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { getMeSilently } from './api/auth';
 import { AppShell } from './components/AppShell';
 import { AlertHistoryPage } from './pages/AlertHistoryPage';
+import { ApprovalCenterPage } from './pages/ApprovalCenterPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { CdcSourcesPage } from './pages/CdcSourcesPage';
 import { DataSourcesPage } from './pages/DataSourcesPage';
@@ -109,6 +110,7 @@ export default function App() {
         <Route path="system/menus" element={<SystemMenusPage />} />
         <Route path="system/security" element={<SystemSecurityPage />} />
         <Route path="system/audit-log" element={<AuditLogPage />} />
+        <Route path="system/approval-center" element={<ApprovalCenterPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

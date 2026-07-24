@@ -1,6 +1,7 @@
 import { DatabaseOutlined, DeleteOutlined, EditOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
+import { isPendingApproval } from '../api/approval';
 import {
   createCdcSource,
   deleteCdcSource,
@@ -101,8 +102,12 @@ export function CdcSourcesPage() {
   const runAction = (id: number, action: (id: number) => Promise<unknown>, successText: string) => {
     setBusyId(id);
     action(id)
-      .then(() => {
-        message.success(successText);
+      .then((result) => {
+        if (isPendingApproval(result)) {
+          message.info(`该资源属于生产环境，已提交审批（申请编号 #${result.approvalRequestId}），审批通过后才会生效`);
+        } else {
+          message.success(successText);
+        }
         load();
       })
       .finally(() => setBusyId(null));
