@@ -31,6 +31,7 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -101,11 +102,11 @@ public class AuthController {
             UserEntity user = userMapper.selectOne(new LambdaQueryWrapper<UserEntity>().eq(UserEntity::getUsername, request.username()));
             UserTotpEntity existingTotp = userTotpMapper.selectById(user.getId());
             if (existingTotp != null) {
-                String pendingToken = pendingLoginStore.create(authentication, user.getId(), null);
+                String pendingToken = pendingLoginStore.create(authentication.getName(), user.getId(), null);
                 return ApiResponse.ok(LoginResult.requiresVerify(pendingToken));
             }
             String newSecret = totpService.generateSecret();
-            String pendingToken = pendingLoginStore.create(authentication, user.getId(), newSecret);
+            String pendingToken = pendingLoginStore.create(authentication.getName(), user.getId(), newSecret);
             String otpAuthUri = totpService.buildOtpAuthUri(newSecret, request.username());
             return ApiResponse.ok(LoginResult.requiresSetup(pendingToken, newSecret, otpAuthUri));
         } catch (AuthenticationException exception) {
@@ -121,22 +122,33 @@ public class AuthController {
         if (pending == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "验证已过期，请重新登录");
         }
-        String secret = pending.pendingSecret != null ? pending.pendingSecret : decryptSecret(pending.userId);
+        String secret = pending.pendingSecret() != null ? pending.pendingSecret() : decryptSecret(pending.userId());
         if (secret == null || !totpService.verifyCode(secret, request.code())) {
             int attempts = pendingLoginStore.recordFailedAttempt(request.pendingToken());
-            saveLoginLog(pending.authentication.getName(), servletRequest, "FAILED", "双因子验证码错误");
+            saveLoginLog(pending.username(), servletRequest, "FAILED", "双因子验证码错误");
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, attempts >= 8 ? "验证失败次数过多，请重新登录" : "验证码错误");
         }
-        if (pending.pendingSecret != null) {
+        if (pending.pendingSecret() != null) {
             UserTotpEntity totp = new UserTotpEntity();
-            totp.setUserId(pending.userId);
-            totp.setSecretEncrypted(DataSourceCredentialCrypto.encrypt(pending.pendingSecret));
+            totp.setUserId(pending.userId());
+            totp.setSecretEncrypted(DataSourceCredentialCrypto.encrypt(pending.pendingSecret()));
             totp.setConfirmedAt(LocalDateTime.now());
             userTotpMapper.insert(totp);
         }
-        completeLogin(pending.authentication, servletRequest);
+        // Re-derives authorities from the current role/menu assignments
+        // rather than reusing whatever login() computed a few minutes ago -
+        // the pending record only kept the username (see
+        // TwoFactorPendingLoginStore's own javadoc for why), and this is
+        // more correct anyway: a role change mid-login-flow takes effect
+        // immediately instead of the stale snapshot surviving into the
+        // session.
+        List<SimpleGrantedAuthority> authorities = authorityService.permissionsFor(pending.username()).stream()
+            .map(SimpleGrantedAuthority::new)
+            .toList();
+        Authentication authentication = new UsernamePasswordAuthenticationToken(pending.username(), null, authorities);
+        completeLogin(authentication, servletRequest);
         pendingLoginStore.consume(request.pendingToken());
-        saveLoginLog(pending.authentication.getName(), servletRequest, "SUCCESS", "登录成功");
+        saveLoginLog(pending.username(), servletRequest, "SUCCESS", "登录成功");
         return ApiResponse.ok(LoginResult.done());
     }
 

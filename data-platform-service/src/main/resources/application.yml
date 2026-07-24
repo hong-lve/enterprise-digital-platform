@@ -31,6 +31,19 @@ spring:
     locations: classpath:db/migration
     validate-on-migrate: false
     encoding: UTF-8
+  # Backs LoginRateLimiter/TwoFactorPendingLoginStore - shared state instead
+  # of an in-process ConcurrentHashMap, so more than one instance of this
+  # service (behind a load balancer) sees the same rate-limit counters and
+  # pending-2FA logins instead of each holding its own, inconsistent copy.
+  # Same bigdata-redis instance the Flink sink jobs already use (host-facing
+  # address, since this JVM runs on the host, not in Docker) - distinct key
+  # prefixes (ratelimit:*, 2fa-pending:*) keep this from ever colliding with
+  # a sink job's own keys in the same instance.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis123}
 
 mybatis-plus:
   configuration:
