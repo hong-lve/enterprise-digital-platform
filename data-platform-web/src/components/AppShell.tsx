@@ -1,4 +1,5 @@
 import {
+  AuditOutlined,
   ClusterOutlined,
   CodeOutlined,
   DashboardOutlined,
@@ -26,6 +27,7 @@ import { useAuthStore } from '../store/auth';
 const { Header, Sider, Content } = Layout;
 
 const iconMap: Record<string, JSX.Element> = {
+  AuditOutlined: <AuditOutlined />,
   ThunderboltOutlined: <ThunderboltOutlined />,
   DashboardOutlined: <DashboardOutlined />,
   DatabaseOutlined: <DatabaseOutlined />,
