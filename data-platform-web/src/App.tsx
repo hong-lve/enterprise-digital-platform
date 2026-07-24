@@ -14,6 +14,7 @@ import { LineagePage } from './pages/LineagePage';
 import { LoginPage } from './pages/LoginPage';
 import { RealtimeOverviewPage } from './pages/RealtimeOverviewPage';
 import { RealtimeQueryPage } from './pages/RealtimeQueryPage';
+import { ReconciliationPage } from './pages/ReconciliationPage';
 import { SystemMenusPage } from './pages/SystemMenusPage';
 import { SystemSecurityPage } from './pages/SystemSecurityPage';
 import { SystemRolesPage } from './pages/SystemRolesPage';
@@ -101,6 +102,7 @@ export default function App() {
         <Route path="realtime/lineage" element={<LineagePage />} />
         <Route path="realtime/sql-jobs" element={<FlinkSqlJobsPage />} />
         <Route path="realtime/alert-history" element={<AlertHistoryPage />} />
+        <Route path="realtime/reconciliation" element={<ReconciliationPage />} />
         <Route path="system/users" element={<SystemUsersPage />} />
         <Route path="system/roles" element={<SystemRolesPage />} />
         <Route path="system/menus" element={<SystemMenusPage />} />

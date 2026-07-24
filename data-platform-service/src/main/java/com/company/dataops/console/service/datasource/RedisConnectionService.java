@@ -89,6 +89,30 @@ public class RedisConnectionService {
         }
     }
 
+    /**
+     * Full, uncapped count of keys matching a pattern (SCAN cursor loop run
+     * to completion) - powers DataReconciliationService's Redis-target row
+     * count. Deliberately separate from scanKeys() below: that one caps at
+     * `limit` and stops early for the "Key 浏览" UI preview, which would
+     * silently undercount a reconciliation check on any keyspace bigger
+     * than the cap.
+     */
+    public long countKeysMatching(DataSourceEntity dataSource, String database, String pattern) {
+        try (Jedis jedis = openConnection(dataSource, database)) {
+            long count = 0;
+            String cursor = "0";
+            ScanParams params = new ScanParams().match(pattern == null || pattern.isBlank() ? "*" : pattern).count(1000);
+            do {
+                ScanResult<String> result = jedis.scan(cursor, params);
+                count += result.getResult().size();
+                cursor = result.getCursor();
+            } while (!"0".equals(cursor));
+            return count;
+        } catch (Exception exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "统计 key 数量失败：" + exception.getMessage(), exception);
+        }
+    }
+
     /** Powers the "Key 浏览" panel: scan by pattern, then TYPE/TTL each match so the UI can list them without a separate round-trip per key. */
     public List<RedisKeyView> listKeysWithMeta(DataSourceEntity dataSource, String database, String pattern, int limit) {
         int capped = Math.max(1, Math.min(limit, 500));
