@@ -49,6 +49,18 @@ management:
       probes:
         enabled: true
 
+# Writes to a stable path (not just console output) so Promtail
+# (docker/bigdata/observability, bind-mounts ../../data-platform-service/logs)
+# can tail it - this process runs directly on the host, not in a container
+# Promtail could otherwise reach via Docker service discovery the way it
+# does for the other bigdata-* containers' logs. Relative to this module's
+# own working directory (confirmed live: `java -jar target/...` from
+# data-platform-service/ - the convention this whole project already runs
+# it with - lands this at data-platform-service/logs/, not the repo root).
+logging:
+  file:
+    name: ${LOG_FILE:./logs/data-platform-service.log}
+
 platform:
   # Local-dev-only default - any real deployment must override this via the
   # DATASOURCE_ENCRYPTION_KEY env var with its own generated value (32 random

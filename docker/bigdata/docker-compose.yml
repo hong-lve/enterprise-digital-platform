@@ -441,6 +441,73 @@ services:
     volumes:
       - minio-data:/data
 
+  # ---------- Observability: Prometheus + Grafana + Loki/Promtail ----------
+  # Turns the metrics data-platform-service already exposes at
+  # /actuator/prometheus (management.endpoints.web.exposure.include) into an
+  # actual scraped-and-graphed signal, plus centralizes every bigdata-*
+  # container's logs (Promtail's Docker service discovery, via the bind-
+  # mounted socket) alongside data-platform-service's own log file (that
+  # process runs on the host, not as a container Promtail could otherwise
+  # see - see application.yml's logging.file.name and the bind mount below).
+  # mem_limit on all four - this whole stack runs on a resource-constrained
+  # dev machine already juggling Kafka/Flink/Debezium, not a dedicated
+  # observability host.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: bigdata-prometheus
+    mem_limit: 200m
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "19090:9090" # Prometheus UI (http://localhost:19090)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: bigdata-loki
+    mem_limit: 200m
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./observability/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: bigdata-promtail
+    mem_limit: 100m
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../../data-platform-service/logs:/var/log/data-platform-service:ro
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: bigdata-grafana
+    mem_limit: 200m
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Required alongside ENABLED above - without an explicit org name,
+      # anonymous requests fail to resolve to an org and the dashboard shell
+      # loads but every panel silently renders empty (confirmed live: no
+      # error shown anywhere, just zero panels in the DOM).
+      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+    ports:
+      - "13000:3000" # Grafana UI (http://localhost:13000, admin/admin on first login - or browse anonymously as Viewer)
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
 volumes:
   mysql-data:
   flink-state:
@@ -450,3 +517,6 @@ volumes:
   doris-fe-meta:
   doris-be-storage:
   minio-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

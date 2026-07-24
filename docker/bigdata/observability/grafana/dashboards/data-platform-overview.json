@@ -1,0 +1,105 @@
+{
+  "title": "data-platform-service overview",
+  "uid": "data-platform-overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "JVM heap used",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(jvm_memory_used_bytes{job=\"data-platform-service\", area=\"heap\"})",
+          "legendFormat": "heap used"
+        },
+        {
+          "expr": "sum(jvm_memory_max_bytes{job=\"data-platform-service\", area=\"heap\"})",
+          "legendFormat": "heap max"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "title": "HTTP request rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{job=\"data-platform-service\"}[1m]))",
+          "legendFormat": "{{uri}} [{{status}}]"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "title": "HTTP p99 latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"data-platform-service\"}[5m])))",
+          "legendFormat": "{{uri}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "title": "DB connection pool (Hikari)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "hikaricp_connections_active{job=\"data-platform-service\"}",
+          "legendFormat": "active"
+        },
+        {
+          "expr": "hikaricp_connections_idle{job=\"data-platform-service\"}",
+          "legendFormat": "idle"
+        },
+        {
+          "expr": "hikaricp_connections_pending{job=\"data-platform-service\"}",
+          "legendFormat": "pending"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "title": "Process CPU usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "process_cpu_usage{job=\"data-platform-service\"}",
+          "legendFormat": "process CPU"
+        },
+        {
+          "expr": "system_cpu_usage{job=\"data-platform-service\"}",
+          "legendFormat": "system CPU"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "title": "Recent logs (all bigdata-* containers + data-platform-service)",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{job=~\".+\"}",
+          "datasource": { "type": "loki", "uid": "loki" }
+        }
+      ]
+    }
+  ]
+}

@@ -38,7 +38,16 @@ public class SecurityConfig {
                 // API surface (endpoint list, request/response shapes) from
                 // being readable by anyone who hasn't logged in, while still
                 // working for anyone who has (same-origin session cookie).
-                .requestMatchers("/auth/login", "/auth/2fa/verify", "/actuator/health/**").permitAll()
+                // /actuator/prometheus alongside health/** for the same reason -
+                // Prometheus's own scraper (docker/bigdata/observability)
+                // hits this directly on a fixed interval with no session,
+                // same as a health-check tool would. Metrics-only exposure
+                // (request counts/latency histograms/JVM stats, no business
+                // data) - a real deployment reachable beyond a trusted
+                // network should still put this behind network-level access
+                // control (a separate internal management port/firewall
+                // rule), not rely on this alone.
+                .requestMatchers("/auth/login", "/auth/2fa/verify", "/actuator/health/**", "/actuator/prometheus").permitAll()
                 .anyRequest().authenticated()
             )
             .logout(logout -> logout.logoutUrl("/auth/logout").logoutSuccessHandler((request, response, authentication) -> response.setStatus(200)))

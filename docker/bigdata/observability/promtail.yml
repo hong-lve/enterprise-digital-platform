@@ -1,0 +1,34 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Every other bigdata-* container's logs (Kafka Connect, Schema Registry,
+  # MySQL, MinIO, Redis, Kafka, and Flink's own containers when running) -
+  # Docker service discovery via the socket bind-mounted below, not a
+  # per-container log path list, so a new bigdata-* container just shows up
+  # automatically without editing this file.
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: "container"
+
+  # data-platform-service runs directly on the host, not as a container
+  # Docker service discovery above can see - tails the file it now writes
+  # to (application.yml's logging.file.name) via the bind mount below
+  # instead.
+  - job_name: data-platform-service
+    static_configs:
+      - targets: ["localhost"]
+        labels:
+          job: data-platform-service
+          __path__: /var/log/data-platform-service/*.log
