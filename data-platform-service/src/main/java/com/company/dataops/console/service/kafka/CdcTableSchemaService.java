@@ -40,7 +40,7 @@ public class CdcTableSchemaService {
 
     public CdcTableSchemaService(
             @Value("${platform.bigdata.kafka-bootstrap-servers-internal:kafka:9092}") String kafkaBootstrapServers,
-            @Value("${platform.bigdata.schema-registry-url-internal:http://schema-registry:8081}") String schemaRegistryUrl) {
+            @Value("${platform.bigdata.schema-registry-url-internal}") String schemaRegistryUrl) {
         this.kafkaBootstrapServers = kafkaBootstrapServers;
         this.schemaRegistryUrl = schemaRegistryUrl;
     }

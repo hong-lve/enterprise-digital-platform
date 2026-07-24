@@ -100,6 +100,14 @@ platform:
     # schema.history.internal.kafka.bootstrap.servers, and CdcTableSchemaService's
     # generated 'properties.bootstrap.servers' Flink SQL DDL.
     kafka-bootstrap-servers-internal: ${KAFKA_BOOTSTRAP_SERVERS_INTERNAL:kafka:9092}
+    # Same internal-vs-host split as kafka-bootstrap-servers above, now that
+    # Kafka Connect's converters emit Avro via Confluent Schema Registry
+    # (docker/bigdata/kafka-connect) instead of plain JSON. This JVM
+    # (CdcLagInspector, CdcTableSchemaService) reaches it via the host-mapped
+    # port; Flink SQL DDL embeds the docker-network address instead, same
+    # reasoning as kafka-bootstrap-servers-internal.
+    schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:18081}
+    schema-registry-url-internal: ${SCHEMA_REGISTRY_URL_INTERNAL:http://schema-registry:8081}
     cdc-recovery-max-attempts: ${CDC_RECOVERY_MAX_ATTEMPTS:3}
     cdc-recovery-delay-seconds: ${CDC_RECOVERY_DELAY_SECONDS:60}
     flink-rest-url: ${FLINK_REST_URL:http://localhost:18082}

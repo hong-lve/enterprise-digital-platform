@@ -20,6 +20,15 @@
     <java.version>17</java.version>
   </properties>
 
+  <!-- io.confluent artifacts (kafka-avro-serializer below) aren't on Maven
+       Central - Confluent publishes them from their own repo only. -->
+  <repositories>
+    <repository>
+      <id>confluent</id>
+      <url>https://packages.confluent.io/maven/</url>
+    </repository>
+  </repositories>
+
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -60,6 +69,17 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    <!--
+      CdcLagInspector decodes the same Avro+Confluent-Schema-Registry wire
+      format Kafka Connect's AvroConverter now writes (see
+      docker/bigdata/kafka-connect) - a plain StringDeserializer stopped
+      working the moment the CDC pipeline switched off JSON.
+    -->
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-avro-serializer</artifactId>
+      <version>7.6.1</version>
     </dependency>
     <dependency>
       <groupId>com.baomidou</groupId>
