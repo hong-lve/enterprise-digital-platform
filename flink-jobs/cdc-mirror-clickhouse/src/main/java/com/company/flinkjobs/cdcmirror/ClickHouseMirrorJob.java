@@ -20,13 +20,14 @@ public class ClickHouseMirrorJob {
         String bootstrapServers = CdcMirrorSupport.arg(args, "kafka-bootstrap", "kafka:9092");
         String topic = CdcMirrorSupport.arg(args, "topic", "mysqldemo.cdc_demo.test_orders_mysql");
         String groupId = CdcMirrorSupport.arg(args, "group-id", "cdc-mirror-clickhouse");
+        String schemaRegistryUrl = CdcMirrorSupport.arg(args, "schema-registry-url", "http://schema-registry:8081");
         String url = CdcMirrorSupport.arg(args, "sink-url", "jdbc:clickhouse://clickhouse:8123/realtime_analytics");
         String user = CdcMirrorSupport.arg(args, "sink-user", "realtime");
         String password = CdcMirrorSupport.arg(args, "sink-password", "realtime123");
         String table = CdcMirrorSupport.arg(args, "sink-table", "test_orders_mysql_ch_sink");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId)
+        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId, schemaRegistryUrl)
             .addSink(new ClickHouseRowSink(url, user, password, table));
         env.execute("CDC Mirror -> ClickHouse (" + table + ")");
     }

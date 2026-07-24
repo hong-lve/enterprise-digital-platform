@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Not a real module - only exists so the Dockerfile's Maven build stage has
+  something to resolve. io.confluent:kafka-connect-avro-converter (and its
+  transitive deps: kafka-avro-serializer, kafka-schema-registry-client,
+  common-config, common-utils, avro) aren't on Maven Central, only on
+  Confluent's own repo - debezium/connect's base image has no reason to
+  bundle them since Debezium itself is converter-agnostic.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.company.tmp</groupId>
+  <artifactId>avro-converter-fetch</artifactId>
+  <version>1.0</version>
+  <packaging>pom</packaging>
+
+  <repositories>
+    <repository>
+      <id>confluent</id>
+      <url>https://packages.confluent.io/maven/</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-connect-avro-converter</artifactId>
+      <version>7.6.1</version>
+    </dependency>
+  </dependencies>
+</project>

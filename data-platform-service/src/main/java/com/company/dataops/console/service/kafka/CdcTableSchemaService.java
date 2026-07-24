@@ -32,10 +32,17 @@ public class CdcTableSchemaService {
     // this needs Kafka's docker-network address, same reasoning as
     // DebeziumConnectorConfigBuilder's schema-history bootstrap servers.
     private final String kafkaBootstrapServers;
+    // Same docker-network-address reasoning as kafkaBootstrapServers above -
+    // Flink's debezium-avro-confluent format resolves each record's Avro
+    // schema from this registry at runtime (see CdcMirrorSupport's own copy
+    // of this same client-side resolution for the JAR-job path).
+    private final String schemaRegistryUrl;
 
     public CdcTableSchemaService(
-            @Value("${platform.bigdata.kafka-bootstrap-servers-internal:kafka:9092}") String kafkaBootstrapServers) {
+            @Value("${platform.bigdata.kafka-bootstrap-servers-internal:kafka:9092}") String kafkaBootstrapServers,
+            @Value("${platform.bigdata.schema-registry-url-internal:http://schema-registry:8081}") String schemaRegistryUrl) {
         this.kafkaBootstrapServers = kafkaBootstrapServers;
+        this.schemaRegistryUrl = schemaRegistryUrl;
     }
 
     public List<String> listTables(CdcSourceEntity source) {
@@ -210,8 +217,8 @@ public class CdcTableSchemaService {
         ddl.append("  'topic' = '").append(topic).append("',\n");
         ddl.append("  'properties.bootstrap.servers' = '").append(kafkaBootstrapServers).append("',\n");
         ddl.append("  'scan.startup.mode' = 'earliest-offset',\n");
-        ddl.append("  'format' = 'debezium-json',\n");
-        ddl.append("  'debezium-json.schema-include' = 'true'\n");
+        ddl.append("  'format' = 'debezium-avro-confluent',\n");
+        ddl.append("  'debezium-avro-confluent.schema-registry.url' = '").append(schemaRegistryUrl).append("'\n");
         ddl.append(");\n");
 
         boolean hasPrimaryKey = !primaryKeys.isEmpty();
@@ -258,7 +265,7 @@ public class CdcTableSchemaService {
         if (flinkType.equals("STRING") && !isKnownStringType(column)) {
             notePrefix = "  -- 未识别的" + (column.oracle() ? "Oracle" : "MySQL") + "类型 " + column.mysqlType() + "，已按 STRING 处理，请手动确认\n";
         } else if (isDatetimeType(column)) {
-            notePrefix = "  -- Debezium 把该字段编码成纪元毫秒整数，Flink debezium-json 无法直接解析成 TIMESTAMP，"
+            notePrefix = "  -- Debezium 把该字段编码成纪元毫秒整数，Flink debezium-avro-confluent 无法直接解析成 TIMESTAMP，"
                 + "先按 BIGINT 存原始值，需要可读时间可在 SELECT 里用 TO_TIMESTAMP_LTZ(`" + column.name() + "`, 3) 转换\n";
         } else {
             notePrefix = "";
@@ -341,13 +348,14 @@ public class CdcTableSchemaService {
             // Not a separate ANSI DATE case: Oracle's DATE always includes a
             // time-of-day component, and Debezium encodes it exactly like
             // TIMESTAMP - as io.debezium.time.Timestamp (epoch millis), not
-            // an epoch-days int or ISO date string. Declaring the Flink
-            // column DATE here used to submit fine but fail every record at
-            // runtime with "Corrupt Debezium JSON message" (confirmed live)
-            // since Flink's debezium-json format can't parse a millis int64
-            // as DATE. BIGINT matches what's actually on the wire, same as
-            // the timestamp* branch below and MySQL's datetime/timestamp
-            // handling in mapMysqlType().
+            // an epoch-days int or ISO date string, regardless of which
+            // converter (JSON or Avro) Kafka Connect serializes it with.
+            // Declaring the Flink column DATE here used to submit fine but
+            // fail every record at runtime (confirmed live, back when this
+            // was still debezium-json) since Flink's format can't parse a
+            // millis int64 as DATE. BIGINT matches what's actually on the
+            // wire, same as the timestamp* branch below and MySQL's
+            // datetime/timestamp handling in mapMysqlType().
             case "date" -> "BIGINT";
             default -> type.startsWith("timestamp") ? "BIGINT" : "STRING";
         };

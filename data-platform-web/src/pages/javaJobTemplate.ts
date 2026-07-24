@@ -22,6 +22,7 @@ public class MyCustomJob {
         String bootstrapServers = CdcMirrorSupport.arg(args, "kafka-bootstrap", "kafka:9092");
         String topic = CdcMirrorSupport.arg(args, "topic", "mysqldemo.cdc_demo.test_orders_mysql");
         String groupId = CdcMirrorSupport.arg(args, "group-id", "my-custom-job");
+        String schemaRegistryUrl = CdcMirrorSupport.arg(args, "schema-registry-url", "http://schema-registry:8081");
         String host = CdcMirrorSupport.arg(args, "sink-host", "redis");
         int port = Integer.parseInt(CdcMirrorSupport.arg(args, "sink-port", "6379"));
         String password = CdcMirrorSupport.arg(args, "sink-password", "redis123");
@@ -35,8 +36,12 @@ public class MyCustomJob {
         // sourceRows() already parses the Debezium CDC envelope for you -
         // each row here is a lower-cased column-name -> text-value Map
         // (id/order_no/amount/status/created_at for the demo test_orders_*
-        // schema), deletes/tombstones already filtered out.
-        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId)
+        // schema), deletes/tombstones already filtered out. Envelopes are
+        // Avro now (Kafka Connect's converters + Confluent Schema Registry),
+        // not plain JSON - sourceRows() resolves each record's schema from
+        // the registry by the id embedded in the message, so this still
+        // works across tables without knowing any schema ahead of time.
+        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId, schemaRegistryUrl)
             .addSink(new MySink(host, port, password, keyPrefix));
         env.execute("My Custom Job");
     }

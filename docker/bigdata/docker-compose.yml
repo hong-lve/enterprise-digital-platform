@@ -197,20 +197,63 @@ services:
     ports:
       - "19092:9094" # host-reachable broker listener (kafka:9092 is the in-network one Kafka Connect/Kafka UI use)
 
+  # ---------- Schema Registry ----------
+  # Confluent's registry works against any Kafka broker over the plain
+  # protocol (not Confluent-specific) - it's what turns "every CDC topic is
+  # some JSON shape by convention" into an actual enforced contract: Kafka
+  # Connect's AvroConverter (see kafka-connect below) registers each topic's
+  # schema here on first write and rejects an incompatible schema change at
+  # the connector, not silently downstream in whatever job happens to read
+  # the topic next.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: bigdata-schema-registry
+    depends_on:
+      - kafka
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - "18081:8081" # Schema Registry REST API (http://localhost:18081) - host port 8081 already
+                      # taken by data-platform-service's own default port range assumptions
+
   # ---------- Kafka Connect (Debezium) ----------
-  # debezium/connect ships with all Debezium connector plugins preinstalled
-  # (including the MySQL one), so there is no separate plugin-install step.
+  # Custom image (docker/bigdata/kafka-connect/Dockerfile), not the stock
+  # debezium/connect - adds Confluent's AvroConverter (+ its schema-registry
+  # client) to the plugin path, since Debezium's own image only ships
+  # Apache-licensed converters and has no reason to bundle Confluent's.
   kafka-connect:
-    image: debezium/connect:3.0.0.Final
+    build:
+      context: ./kafka-connect
+      dockerfile: Dockerfile
+    image: data-platform-kafka-connect:3.0.0.Final
     container_name: bigdata-kafka-connect
     depends_on:
       - kafka
+      - schema-registry
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: data-platform-cdc
       CONFIG_STORAGE_TOPIC: _connect_configs
       OFFSET_STORAGE_TOPIC: _connect_offsets
       STATUS_STORAGE_TOPIC: _connect_statuses
+      # Worker-level default converters - DebeziumConnectorConfigBuilder
+      # doesn't set key.converter/value.converter per-connector, so every
+      # CDC connector inherits these. KEY_CONVERTER/VALUE_CONVERTER (no
+      # CONNECT_ prefix) specifically - confirmed live by reading
+      # /docker-entrypoint.sh inside the image: it does
+      # ": ${KEY_CONVERTER:=...JsonConverter}" then unconditionally
+      # "export CONNECT_KEY_CONVERTER=$KEY_CONVERTER", clobbering a
+      # CONNECT_KEY_CONVERTER set directly (which is the image's normal,
+      # generic CONNECT_*-prefixed passthrough for everything else) back to
+      # the JSON default every time. The *_SCHEMA_REGISTRY_URL properties
+      # have no such unprefixed special-case, so they do go through the
+      # normal CONNECT_ passthrough.
+      KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
     ports:
       - "18083:8083" # Kafka Connect REST API - host port 8083 is already used by
                       # insight-screen-service's backend, so remapped like the

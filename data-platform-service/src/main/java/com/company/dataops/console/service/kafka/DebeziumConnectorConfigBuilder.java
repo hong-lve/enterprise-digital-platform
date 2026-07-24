@@ -71,11 +71,12 @@ public class DebeziumConnectorConfigBuilder {
         config.put("schema.history.internal.kafka.topic", "schema-changes." + source.getTopicPrefix());
         config.put("schema.history.internal.kafka.bootstrap.servers", kafkaBootstrapServers);
         config.put("include.schema.changes", "false");
-        // Default (precise) mode encodes DECIMAL columns as base64 bytes via
-        // Kafka Connect's Decimal logical type - Flink's debezium-json format
-        // can't parse that back out and throws "Corrupt Debezium JSON
-        // message". string mode emits a plain JSON string instead, which
-        // Flink's format does understand.
+        // Default (precise) mode encodes DECIMAL columns as bytes via Kafka
+        // Connect's Decimal logical type (base64 in JSON, Avro's decimal
+        // logical type over `bytes`/`fixed` either way) - CdcMirrorSupport's
+        // GenericRecord.toString() extraction and Flink's debezium-* formats
+        // both expect a plain string field instead, same reasoning either
+        // converter. string mode emits exactly that.
         config.put("decimal.handling.mode", "string");
         return config;
     }
@@ -113,9 +114,9 @@ public class DebeziumConnectorConfigBuilder {
         config.put("schema.history.internal.kafka.topic", "schema-changes." + source.getTopicPrefix());
         config.put("schema.history.internal.kafka.bootstrap.servers", kafkaBootstrapServers);
         // Same reasoning as MySQL's decimal.handling.mode above - Oracle
-        // NUMBER columns hit the identical base64-vs-Flink-debezium-json
-        // problem, confirmed live (this platform's demo table's NUMBER
-        // columns came through as plain JSON strings with this set).
+        // NUMBER columns hit the identical bytes-vs-plain-string problem,
+        // confirmed live (this platform's demo table's NUMBER columns came
+        // through as plain strings with this set).
         config.put("decimal.handling.mode", "string");
         return config;
     }

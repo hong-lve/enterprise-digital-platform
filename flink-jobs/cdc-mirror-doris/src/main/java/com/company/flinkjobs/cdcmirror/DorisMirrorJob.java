@@ -22,13 +22,14 @@ public class DorisMirrorJob {
         String bootstrapServers = CdcMirrorSupport.arg(args, "kafka-bootstrap", "kafka:9092");
         String topic = CdcMirrorSupport.arg(args, "topic", "mysqldemo.cdc_demo.test_orders_mysql");
         String groupId = CdcMirrorSupport.arg(args, "group-id", "cdc-mirror-doris");
+        String schemaRegistryUrl = CdcMirrorSupport.arg(args, "schema-registry-url", "http://schema-registry:8081");
         String url = CdcMirrorSupport.arg(args, "sink-url", "jdbc:mysql://doris:9030/realtime_demo");
         String user = CdcMirrorSupport.arg(args, "sink-user", "root");
         String password = CdcMirrorSupport.arg(args, "sink-password", "");
         String table = CdcMirrorSupport.arg(args, "sink-table", "test_orders_mysql_doris_sink");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId)
+        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId, schemaRegistryUrl)
             .addSink(new DorisRowSink(url, user, password, table));
         env.execute("CDC Mirror -> Doris (" + table + ")");
     }
