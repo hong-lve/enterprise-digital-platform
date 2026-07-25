@@ -1,0 +1,534 @@
+# Generated from docker-compose.yml (this file's twin) via a straight sed pass
+# rebinding every published port from the default 0.0.0.0 to 127.0.0.1 -
+# nothing else differs between the two files. Meant for a network-exposed
+# host (e.g. a cloud VM), not local dev use: several services here still
+# ship the same weak dev-only passwords documented below (MySQL root/123456,
+# MinIO minioadmin/minioadmin, ...), which is fine when only the host itself
+# can reach them but a real risk if bound to a public IP (mass-scanning bots
+# specifically look for exactly this). Reach these from elsewhere via an SSH
+# local-port-forward tunnel to the host, not by opening the ports directly.
+# Regenerate after editing docker-compose.yml with:
+#   sed -E 's/- "([0-9]+):([0-9]+)"/- "127.0.0.1:\1:\2"/' docker-compose.yml > docker-compose.remote.yml
+#
+# Minimal local test environment for Flink/Kafka/CDC/ClickHouse integration,
+# trimmed down from the upstream project's full Hive/Spark/Flink compose file.
+# This checkout only carries data-platform-service + data-platform-web - a
+# standalone app with its own local auth tables (see
+# data-platform-service/src/main/resources/db/migration) and no external
+# identity provider. Hive and Spark (hive-metastore, hive-server2,
+# spark-master, spark-worker) were removed here since neither one is
+# referenced anywhere in this app's code. Keycloak was removed too - this
+# checkout went back to local username/password login, no more OIDC/SSO
+# across multiple apps since only one app remains here.
+#
+# Host ports are deliberately remapped away from 8080/8085 and 5178, which
+# are already used by this project's own backend and frontend dev servers.
+
+services:
+  # ---------- MySQL ----------
+  # Previously assumed installed directly on the host - now containerized so
+  # local dev doesn't depend on a manually-maintained host install. Published
+  # on 13306, not 3306, since a real host-installed MySQL may still be
+  # running on the default port; app-level defaults already point at 13306
+  # (see application.yml).
+  mysql:
+    image: mysql:8.0
+    container_name: bigdata-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456" # matches the app's existing MYSQL_PASSWORD default
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Only runs on first boot (empty data dir). data-platform-service's own
+      # Flyway migrations (db/migration) create its tables and seed data
+      # (the default admin account) on first startup - nothing else to
+      # restore here.
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---------- Flink (standalone session cluster) ----------
+  # Named volumes default to root:root ownership, but the Flink process
+  # inside the image runs as uid 9999 (the "flink" user, dropped from root
+  # by the image's entrypoint) - without this init step, checkpointing fails
+  # with "Failed to create directory for shared state" the first time a job
+  # tries to checkpoint against a freshly created volume.
+  flink-state-init:
+    image: busybox
+    container_name: bigdata-flink-state-init
+    command: chown -R 9999:9999 /opt/flink/state
+    volumes:
+      - flink-state:/opt/flink/state
+    restart: "no"
+
+  flink-jobmanager:
+    image: flink:1.19-java17
+    container_name: bigdata-flink-jobmanager
+    depends_on:
+      flink-state-init:
+        condition: service_completed_successfully
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        state.checkpoints.dir: file:///opt/flink/state/checkpoints
+        state.savepoints.dir: file:///opt/flink/state/savepoints
+    ports:
+      - "127.0.0.1:18082:8081" # Flink web UI / REST API (http://localhost:18082)
+    volumes:
+      - flink-state:/opt/flink/state # checkpoint/savepoint storage for data-platform-service's
+                                      # streaming jobs (stop-with-savepoint, resume-from-savepoint)
+      - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
+        # single-file mount, not the whole lib/ dir - a directory mount would
+        # replace the image's own lib/ contents wholesale and break every
+        # other bundled jar. Needed here (not just in flink-sql-gateway)
+        # because SQL Gateway submits in "remote" execution mode - the actual
+        # query runs on this jobmanager/taskmanager, not inside the gateway
+        # container, so the Kafka SQL connector has to resolve here too.
+      - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
+        # Built from flink-connectors/clickhouse-jdbc-dialect - a JdbcDialect
+        # (via official flink-connector-jdbc's SPI) that lets SQL 流作�?        # declare a 'connector'='jdbc' sink pointed at ClickHouse. This jar
+        # is now the cluster's only source of flink-connector-jdbc itself,
+        # not just the ClickHouse dialect - see that module's pom.xml for
+        # why its shade config merges rather than replaces the official
+        # MySQL/Postgres/Derby/... dialects bundled inside it.
+      - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
+        # Official Apache Doris connector (org.apache.doris:flink-doris-
+        # connector-1.19), a prebuilt shaded jar - unlike ClickHouse this
+        # didn't need a hand-written dialect, Doris's Unique Key model does
+        # real upsert/delete at the storage layer itself. 'connector'='doris'
+        # in SQL 流作�? The doris service below is profile-gated (not part
+        # of the default `docker compose up -d`) - this jar can sit here
+        # unused without hurting anything when that profile isn't running.
+      - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
+        # The clickhouse-jdbc-dialect jar above bundles flink-connector-jdbc's
+        # generic 'connector'='jdbc' logic but not an actual JDBC driver class
+        # for MySQL - without this, a SQL 流作�?sink pointed at a MySQL
+        # data source would submit fine but fail at runtime with "no suitable
+        # driver". Same jar this service's own JVM already depends on
+        # (pom.xml), just also handed to the cluster containers that execute
+        # the sink's INSERT.
+      - ./flink-lib/ojdbc11-23.9.0.25.07.jar:/opt/flink/lib/ojdbc11-23.9.0.25.07.jar:ro
+        # Same reasoning as the MySQL driver above, for Oracle - unlike
+        # ClickHouse, flink-connector-jdbc already ships an Oracle JdbcDialect
+        # out of the box (see clickhouse-jdbc-dialect's own pom.xml comment),
+        # so only the driver jar itself was missing, no custom dialect module
+        # needed.
+      - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
+        # Built from flink-connectors/redis-table-sink - unlike the other four
+        # sink types, Redis isn't JDBC-queryable at all, so this can't reuse
+        # flink-connector-jdbc; it's a standalone 'connector'='redis' Table
+        # API sink (Sink V2 + Jedis) written from scratch, since the only
+        # existing community option (Apache Bahir's flink-connector-redis) is
+        # DataStream-API-only with no Table/SQL connector factory.
+
+  flink-taskmanager:
+    image: flink:1.19-java17
+    container_name: bigdata-flink-taskmanager
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 20
+        state.checkpoints.dir: file:///opt/flink/state/checkpoints
+        state.savepoints.dir: file:///opt/flink/state/savepoints
+    volumes:
+      - flink-state:/opt/flink/state
+      - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
+      - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
+      - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
+      - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
+      - ./flink-lib/ojdbc11-23.9.0.25.07.jar:/opt/flink/lib/ojdbc11-23.9.0.25.07.jar:ro
+      - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
+
+  # ---------- Flink SQL Gateway (interactive SQL queries against Kafka topics) ----------
+  # Submits in "remote" execution mode against the existing flink-jobmanager
+  # session cluster above - deliberately not its own mini-cluster, since this
+  # environment has a limited number of task slots total (see flink-taskmanager)
+  # and batch/streaming jobs already compete for them. debezium-json format comes from
+  # flink-json, already bundled in the base image's lib/ - only the Kafka SQL
+  # connector needed adding. Scope is read-only interactive querying (CREATE
+  # TABLE mapping a Kafka topic + SELECT); "SQL 流作�? (data-platform-
+  # service's SQL-Gateway-submitted persistent jobs, a separate feature from
+  # this read-only query workbench) can now write to ClickHouse too via the
+  # clickhouse-jdbc-dialect jar below - hand-written jars like
+  # flink-jobs/task-stats-job remain the only option when a job needs
+  # anything beyond plain SQL (custom windowing logic, non-JDBC sinks, etc).
+  flink-sql-gateway:
+    image: flink:1.19-java17
+    container_name: bigdata-flink-sql-gateway
+    depends_on:
+      - flink-jobmanager
+    command: >
+      bash -c "bin/sql-gateway.sh start-foreground
+      -Dsql-gateway.endpoint.rest.address=0.0.0.0
+      -Dexecution.target=remote
+      -Drest.address=flink-jobmanager
+      -Drest.port=8081"
+    ports:
+      - "127.0.0.1:18084:8083" # SQL Gateway REST API (http://localhost:18084)
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
+      - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
+        # SQL Gateway compiles/validates DDL on its own classpath before
+        # handing the job off to the jobmanager - without this mount here
+        # too, a 'connector'='jdbc' CREATE TABLE would fail at compile time
+        # even though the jobmanager/taskmanager also have the jar.
+      - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
+      - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
+      - ./flink-lib/ojdbc11-23.9.0.25.07.jar:/opt/flink/lib/ojdbc11-23.9.0.25.07.jar:ro
+      - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
+
+  # ---------- Kafka (KRaft mode, single node, no separate Zookeeper) ----------
+  # This is only for the data-platform-service CDC pipeline (Debezium ->
+  # Kafka); it is intentionally not shared with data-platform-service, which
+  # stays purely offline/batch (see PROJECT_SPLIT.md).
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: bigdata-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    ports:
+      - "127.0.0.1:19092:9094" # host-reachable broker listener (kafka:9092 is the in-network one Kafka Connect/Kafka UI use)
+
+  # ---------- Schema Registry ----------
+  # Confluent's registry works against any Kafka broker over the plain
+  # protocol (not Confluent-specific) - it's what turns "every CDC topic is
+  # some JSON shape by convention" into an actual enforced contract: Kafka
+  # Connect's AvroConverter (see kafka-connect below) registers each topic's
+  # schema here on first write and rejects an incompatible schema change at
+  # the connector, not silently downstream in whatever job happens to read
+  # the topic next.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: bigdata-schema-registry
+    depends_on:
+      - kafka
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - "127.0.0.1:18081:8081" # Schema Registry REST API (http://localhost:18081) - host port 8081 already
+                      # taken by data-platform-service's own default port range assumptions
+
+  # ---------- Kafka Connect (Debezium) ----------
+  # Custom image (docker/bigdata/kafka-connect/Dockerfile), not the stock
+  # debezium/connect - adds Confluent's AvroConverter (+ its schema-registry
+  # client) to the plugin path, since Debezium's own image only ships
+  # Apache-licensed converters and has no reason to bundle Confluent's.
+  kafka-connect:
+    build:
+      context: ./kafka-connect
+      dockerfile: Dockerfile
+    image: data-platform-kafka-connect:3.0.0.Final
+    container_name: bigdata-kafka-connect
+    depends_on:
+      - kafka
+      - schema-registry
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: data-platform-cdc
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_statuses
+      # Worker-level default converters - DebeziumConnectorConfigBuilder
+      # doesn't set key.converter/value.converter per-connector, so every
+      # CDC connector inherits these. KEY_CONVERTER/VALUE_CONVERTER (no
+      # CONNECT_ prefix) specifically - confirmed live by reading
+      # /docker-entrypoint.sh inside the image: it does
+      # ": ${KEY_CONVERTER:=...JsonConverter}" then unconditionally
+      # "export CONNECT_KEY_CONVERTER=$KEY_CONVERTER", clobbering a
+      # CONNECT_KEY_CONVERTER set directly (which is the image's normal,
+      # generic CONNECT_*-prefixed passthrough for everything else) back to
+      # the JSON default every time. The *_SCHEMA_REGISTRY_URL properties
+      # have no such unprefixed special-case, so they do go through the
+      # normal CONNECT_ passthrough.
+      KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    ports:
+      - "127.0.0.1:18083:8083" # Kafka Connect REST API - host port 8083 is already used by
+                      # insight-screen-service's backend, so remapped like the
+                      # other bigdata ports in this file
+
+  # ---------- Kafka UI ----------
+  # Optional but included for the same reason Spark/Flink got web UIs: lets you
+  # see topics/messages/connector status from a browser instead of only REST
+  # calls. provectuslabs/kafka-ui was archived; kafbat/kafka-ui is the actively
+  # maintained community fork.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    container_name: bigdata-kafka-ui
+    depends_on:
+      - kafka
+      - kafka-connect
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+    ports:
+      - "127.0.0.1:18090:8080" # Kafka UI (http://localhost:18090)
+
+  # ---------- ClickHouse (real-time storage layer) ----------
+  # Single node, no cluster/replication - data-platform-service's
+  # RealtimeQueryController queries this to verify data landing from Flink
+  # jobs the user submits (this repo doesn't write the Flink->ClickHouse
+  # sink code itself, see docker/bigdata/README.md).
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.6
+    container_name: bigdata-clickhouse
+    environment:
+      CLICKHOUSE_DB: realtime_analytics
+      CLICKHOUSE_USER: realtime
+      CLICKHOUSE_PASSWORD: realtime123
+    ports:
+      - "127.0.0.1:8123:8123" # HTTP interface - the JDBC driver uses this
+      - "127.0.0.1:9000:9000" # native protocol - for `clickhouse-client` manual debugging/table setup
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+  # ---------- Oracle (Flink/SQL 流作�?sink target + CDC 数据�?+ "数据�?  # 配置" 里的 Oracle 类型现在有真实实例可�? ----------
+  # gvenzl/oracle-free instead of the official Oracle Container Registry
+  # image - the official one requires an Oracle account and `docker login
+  # container-registry.oracle.com` before it can even be pulled; this
+  # community image is the same Oracle Database Free edition, just
+  # packaged for a plain `docker pull` with no login. APP_USER/
+  # APP_USER_PASSWORD makes the image create a non-privileged schema on
+  # first boot (mirrors ClickHouse's CLICKHOUSE_USER/PASSWORD above)
+  # instead of connecting as SYS/SYSTEM directly. Default service name is
+  # FREEPDB1 (not overridden here). First boot creates the database files
+  # from scratch and can take 1-3 minutes - the healthcheck's long
+  # start_period accounts for that; `docker compose ps` will show it as
+  # "starting" until then, not failed.
+  #
+  # Pinned to 23.9-slim, NOT the floating 23-slim tag - confirmed live that
+  # 23-slim now resolves to a build whose PRODUCT_COMPONENT_VERSION.PRODUCT
+  # column reads "Oracle AI Database 26ai Free" (Oracle's newer "AI
+  # Database" rebrand), which breaks Debezium 3.0.0.Final's Oracle
+  # connector (io.debezium.connector.oracle.OracleConnection.
+  # resolveOracleDatabaseVersion() looks for the literal substring "Oracle
+  # Database", which "Oracle AI Database" doesn't contain contiguously) -
+  # every connector fails at startup with "Failed to resolve Oracle
+  # database version". 23.9-slim's banner is "Oracle Database 23ai Free",
+  # which does match. No newer debezium/connect image tag exists yet
+  # (3.0.0.Final is current as of this writing) with a fix for the new
+  # banner format, so pinning the Oracle side is the only fix available
+  # for now - re-test this pin if bumping the Oracle image later.
+  oracle:
+    image: gvenzl/oracle-free:23.9-slim
+    container_name: bigdata-oracle
+    environment:
+      ORACLE_PASSWORD: oracle123
+      APP_USER: realtime
+      APP_USER_PASSWORD: realtime123
+    ports:
+      - "127.0.0.1:1521:1521"
+    healthcheck:
+      test: ["CMD", "/opt/oracle/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+
+  # ---------- Redis (Flink/SQL 流作�?sink target + "数据源配�?/"实时数据
+  # 查询" 里的 Redis 类型) ----------
+  # Single node, requirepass only (no ACL users beyond the built-in "default"
+  # user) - matches this environment's "functional testing, not production"
+  # scope, same as every other data store here. appendonly enabled so a
+  # container restart doesn't silently lose demo data the way Doris does
+  # (see that service's own comment on why it has no volume).
+  redis:
+    image: redis:7-alpine
+    container_name: bigdata-redis
+    command: redis-server --requirepass redis123 --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+
+  # ---------- Doris (all-in-one, opt-in via --profile doris) ----------
+  # Alternative OLAP sink for "SQL 流作�? alongside ClickHouse - unlike
+  # ClickHouse, Doris's Unique Key model has real primary-key upsert
+  # (including delete) at the storage layer, so a SQL job can mirror a CDC
+  # changelog into it directly without the aggregate-before-sink workaround
+  # ClickHouse needs (see flink-connectors/clickhouse-jdbc-dialect).
+  #
+  # NOT in the default `docker compose up -d` - profile-gated because this
+  # was measured to genuinely not fit alongside the rest of this environment:
+  # the existing Hive/Spark/Flink/Kafka/ClickHouse containers already use
+  # ~4.4GB of this environment's 7.6GB Docker memory allocation, and even
+  # though Doris's own footprint is a modest ~1.6GB once FE+BE are up, its
+  # own internal safety check refused to execute a query with that little
+  # system memory left over (rejected with a "sys available memory below low
+  # water mark" error during real testing, not a guess). Apache Doris's own
+  # quickstart docs recommend 8GB+ free for this all-in-one image - bump
+  # Docker Desktop's memory limit at least that much before doing
+  # `docker compose --profile doris up -d doris`.
+  #
+  # doris-fe-meta/doris-be-storage volumes below persist FE metadata and BE
+  # tablet data across container recreation - confirmed these are the actual
+  # paths via `du -sh` inside a running container (fe.conf's meta_dir and
+  # be.conf's storage_root_path both default to $DORIS_HOME/<name>, i.e.
+  # /opt/apache-doris/fe/doris-meta and /opt/apache-doris/be/storage
+  # respectively; both commented-out in the shipped conf files, so this just
+  # keeps the image's own defaults, not a custom path). Added after this
+  # environment's Doris data was wiped by an unrelated whole-Docker-restart
+  # (Doris has no HA/replication - see doris-entrypoint-wrapper.sh - so unlike
+  # ClickHouse/Oracle this was a real, not hypothetical, gap).
+  #
+  # entrypoint/command override: the image's own /usr/local/bin/entry_point.sh
+  # always registers its backend with FE using a hard-coded "127.0.0.1"
+  # (confirmed by reading that script - it's not derived from be.conf), which
+  # only resolves to "this container" from FE's own process, not from other
+  # containers like flink-jobmanager trying to Stream Load into it. This
+  # can't be avoided by pre-configuring anything; doris-entrypoint-wrapper.sh
+  # runs the real entrypoint unmodified and then corrects the registration
+  # in place (fix be.conf, restart BE, drop the bad registration, re-add
+  # with this container's real Docker network address) - see that script's
+  # own comments for the full sequence, verified live against a real
+  # cross-container CDC-to-Doris Flink SQL job.
+  doris:
+    image: apache/doris:doris-all-in-one-2.1.0
+    container_name: bigdata-doris
+    profiles: ["doris"]
+    # Kept running continuously (unlike other profile-gated services here,
+    # which are only ever started for a point-in-time test) - restarts it
+    # after a crash or Docker Desktop restart without needing a manual
+    # `docker compose --profile doris up -d doris` each time.
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/doris-entrypoint-wrapper.sh"]
+    ports:
+      - "127.0.0.1:8030:8030" # FE HTTP - Stream Load endpoint (what the sink writes through) + web UI
+      - "127.0.0.1:9030:9030" # FE MySQL protocol - `mysql -h127.0.0.1 -P9030 -uroot` for manual table setup/debugging
+    volumes:
+      - ./doris-entrypoint-wrapper.sh:/doris-entrypoint-wrapper.sh:ro
+      - doris-fe-meta:/opt/apache-doris/fe/doris-meta
+      - doris-be-storage:/opt/apache-doris/be/storage
+
+  # ---------- MinIO (S3-compatible object storage) ----------
+  # Backs data-platform-service's JarStorageService (uploaded Flink job
+  # JARs) - a real object store instead of the service's local disk, same
+  # "wire up a real instance" approach as the Oracle/Redis services above.
+  # Console (9001) is the web UI; API (9000) is what JarStorageService's
+  # S3Client talks to. Both remapped to the 19xxx range like every other
+  # host port in this file - 9000 is already used by clickhouse's native
+  # protocol port above.
+  minio:
+    image: minio/minio:latest
+    container_name: bigdata-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "127.0.0.1:19000:9000" # S3 API (http://localhost:19000) - JarStorageService's jar-storage-endpoint
+      - "127.0.0.1:19001:9001" # web console (http://localhost:19001, login minioadmin/minioadmin)
+    volumes:
+      - minio-data:/data
+
+  # ---------- Observability: Prometheus + Grafana + Loki/Promtail ----------
+  # Turns the metrics data-platform-service already exposes at
+  # /actuator/prometheus (management.endpoints.web.exposure.include) into an
+  # actual scraped-and-graphed signal, plus centralizes every bigdata-*
+  # container's logs (Promtail's Docker service discovery, via the bind-
+  # mounted socket) alongside data-platform-service's own log file (that
+  # process runs on the host, not as a container Promtail could otherwise
+  # see - see application.yml's logging.file.name and the bind mount below).
+  # mem_limit on all four - this whole stack runs on a resource-constrained
+  # dev machine already juggling Kafka/Flink/Debezium, not a dedicated
+  # observability host.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: bigdata-prometheus
+    mem_limit: 200m
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:19090:9090" # Prometheus UI (http://localhost:19090)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: bigdata-loki
+    mem_limit: 200m
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./observability/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: bigdata-promtail
+    mem_limit: 100m
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../../data-platform-service/logs:/var/log/data-platform-service:ro
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: bigdata-grafana
+    mem_limit: 200m
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Required alongside ENABLED above - without an explicit org name,
+      # anonymous requests fail to resolve to an org and the dashboard shell
+      # loads but every panel silently renders empty (confirmed live: no
+      # error shown anywhere, just zero panels in the DOM).
+      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+    ports:
+      - "127.0.0.1:13000:3000" # Grafana UI (http://localhost:13000, admin/admin on first login - or browse anonymously as Viewer)
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  mysql-data:
+  flink-state:
+  clickhouse-data:
+  oracle-data:
+  redis-data:
+  doris-fe-meta:
+  doris-be-storage:
+  minio-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:
