@@ -3,6 +3,7 @@ package com.company.dataops.console.api;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.entity.DataSourceEntity;
 import com.company.dataops.console.mapper.DataSourceMapper;
+import com.company.dataops.console.security.ActionRateLimiter;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
 import com.company.dataops.console.service.datasource.RedisConnectionService;
 import com.company.dataops.console.service.query.ColumnView;
@@ -12,9 +13,11 @@ import com.company.dataops.console.service.query.TableView;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import java.time.Duration;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,14 +36,21 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @RequestMapping("/realtime/query")
 public class RealtimeQueryController {
+    // Runs arbitrary user SQL/Redis commands against a live registered data
+    // source - same reasoning as FlinkSqlQueryController's limit.
+    private static final int MAX_EXECUTIONS_PER_WINDOW = 20;
+    private static final Duration WINDOW = Duration.ofMinutes(1);
+
     private final DataSourceMapper dataSourceMapper;
     private final DataSourceConnectionService connectionService;
     private final RedisConnectionService redisConnectionService;
+    private final ActionRateLimiter rateLimiter;
 
-    public RealtimeQueryController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, RedisConnectionService redisConnectionService) {
+    public RealtimeQueryController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, RedisConnectionService redisConnectionService, ActionRateLimiter rateLimiter) {
         this.dataSourceMapper = dataSourceMapper;
         this.connectionService = connectionService;
         this.redisConnectionService = redisConnectionService;
+        this.rateLimiter = rateLimiter;
     }
 
     @GetMapping("/tables")
@@ -69,7 +79,8 @@ public class RealtimeQueryController {
 
     @PostMapping("/execute")
     @PreAuthorize("hasAuthority('realtime:query:execute')")
-    public ApiResponse<QueryResult> execute(@Valid @RequestBody QueryRequest request) {
+    public ApiResponse<QueryResult> execute(@Valid @RequestBody QueryRequest request, Authentication authentication) {
+        rateLimiter.assertWithinLimit("ratelimit:realtime-query-execute:" + authentication.getName(), MAX_EXECUTIONS_PER_WINDOW, WINDOW);
         int limit = request.limit() == null ? 200 : request.limit();
         DataSourceEntity dataSource = requireDataSource(request.dataSourceId());
         // request.sql() doubles as "the Redis command line" when the data

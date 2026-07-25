@@ -10,6 +10,7 @@ import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.mapper.FlinkJarMapper;
 import com.company.dataops.console.mapper.FlinkJarVersionMapper;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
+import com.company.dataops.console.security.ActionRateLimiter;
 import com.company.dataops.console.service.storage.JarEntryClassScanner;
 import com.company.dataops.console.service.storage.JarStorageService;
 import com.company.dataops.console.service.storage.JavaJobBuildService;
@@ -19,6 +20,7 @@ import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.core.io.ByteArrayResource;
@@ -57,12 +59,19 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @RequestMapping("/realtime/jars")
 public class FlinkJarController {
+    // compile()/debugRun() each spawn a real javac (and, for debugRun, java)
+    // subprocess - heavier per-call than a query, so a tighter window than
+    // FlinkSqlQueryController/RealtimeQueryController's 20/minute.
+    private static final int MAX_BUILDS_PER_WINDOW = 10;
+    private static final Duration WINDOW = Duration.ofMinutes(1);
+
     private final FlinkJarMapper flinkJarMapper;
     private final FlinkJarVersionMapper flinkJarVersionMapper;
     private final FlinkStreamJobMapper flinkStreamJobMapper;
     private final JarStorageService jarStorageService;
     private final JarEntryClassScanner jarEntryClassScanner;
     private final JavaJobBuildService javaJobBuildService;
+    private final ActionRateLimiter rateLimiter;
 
     public FlinkJarController(
         FlinkJarMapper flinkJarMapper,
@@ -70,7 +79,8 @@ public class FlinkJarController {
         FlinkStreamJobMapper flinkStreamJobMapper,
         JarStorageService jarStorageService,
         JarEntryClassScanner jarEntryClassScanner,
-        JavaJobBuildService javaJobBuildService
+        JavaJobBuildService javaJobBuildService,
+        ActionRateLimiter rateLimiter
     ) {
         this.flinkJarMapper = flinkJarMapper;
         this.flinkJarVersionMapper = flinkJarVersionMapper;
@@ -78,6 +88,7 @@ public class FlinkJarController {
         this.jarStorageService = jarStorageService;
         this.jarEntryClassScanner = jarEntryClassScanner;
         this.javaJobBuildService = javaJobBuildService;
+        this.rateLimiter = rateLimiter;
     }
 
     @GetMapping
@@ -128,6 +139,7 @@ public class FlinkJarController {
     @PreAuthorize("hasAuthority('realtime:jar:upload')")
     public ApiResponse<FlinkJarEntity> compile(@Valid @RequestBody CompileJarRequest request, Authentication authentication) {
         String uploader = authentication == null ? "anonymous" : authentication.getName();
+        rateLimiter.assertWithinLimit("ratelimit:jar-build:" + uploader, MAX_BUILDS_PER_WINDOW, WINDOW);
         JavaJobBuildService.CompileResult result = javaJobBuildService.compileAndPackage(request.className(), request.sourceCode(), request.targetType());
         StoredFile stored = storeBytes(result.jarBytes(), request.className() + ".jar");
 
@@ -153,7 +165,9 @@ public class FlinkJarController {
      */
     @PostMapping("/debug-run")
     @PreAuthorize("hasAuthority('realtime:jar:upload')")
-    public ApiResponse<DebugRunResponse> debugRun(@Valid @RequestBody DebugRunRequest request) {
+    public ApiResponse<DebugRunResponse> debugRun(@Valid @RequestBody DebugRunRequest request, Authentication authentication) {
+        String username = authentication == null ? "anonymous" : authentication.getName();
+        rateLimiter.assertWithinLimit("ratelimit:jar-build:" + username, MAX_BUILDS_PER_WINDOW, WINDOW);
         JavaJobBuildService.CompileResult result = javaJobBuildService.compileAndPackage(request.className(), request.sourceCode(), request.targetType());
         String output = javaJobBuildService.debugRun(result.jarBytes(), request.className(), request.programArgs());
         return ApiResponse.ok(new DebugRunResponse(output));
