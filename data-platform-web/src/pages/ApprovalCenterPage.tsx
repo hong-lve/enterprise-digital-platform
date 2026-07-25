@@ -10,7 +10,10 @@ const actionTypeLabel: Record<string, string> = {
   FLINK_STREAM_JOB_DELETE: '删除 Flink 流作业',
   FLINK_STREAM_JOB_STOP: '停止 Flink 流作业',
   FLINK_SQL_JOB_DELETE: '删除 SQL 流作业',
-  FLINK_SQL_JOB_STOP: '停止 SQL 流作业'
+  FLINK_SQL_JOB_STOP: '停止 SQL 流作业',
+  ROLE_PERMISSION_UPDATE: '修改角色权限',
+  USER_DISABLE: '禁用用户',
+  USER_PASSWORD_RESET: '重置用户密码'
 };
 
 const statusColor: Record<string, string> = {

@@ -24,6 +24,7 @@ import com.company.dataops.console.service.RealtimeAlertService;
 import com.company.dataops.console.service.approval.ChangeApprovalService.ActionType;
 import com.company.dataops.console.service.approval.ChangeApprovalService.ChangeAction;
 import com.company.dataops.console.service.approval.ChangeApprovalService.GateResult;
+import com.company.dataops.console.service.approval.ChangeApprovalService.PayloadChangeAction;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -212,5 +213,45 @@ class ChangeApprovalServiceTest {
         authenticateAs("approver");
         ResponseStatusException exception = assertThrows(ResponseStatusException.class, () -> service.approve(999L));
         assertEquals(404, exception.getStatusCode().value());
+    }
+
+    @Test
+    void gateAlwaysDefersEveryTimeRegardlessOfEnvironment() {
+        authenticateAs("admin");
+        // No "environment" argument at all here, unlike gate() - a role
+        // permission change is sensitive everywhere, not just in PROD.
+        GateResult result = service.gateAlways(ActionType.USER_DISABLE, 5L, "用户: bob");
+
+        assertTrue(result.pending());
+        verify(changeRequestMapper).insert(any(ChangeRequestEntity.class));
+    }
+
+    @Test
+    void gateAlwaysWithPayloadCarriesThePayloadThroughToApproval() {
+        PayloadChangeAction action = mock(PayloadChangeAction.class);
+        service.registerWithPayload(ActionType.ROLE_PERMISSION_UPDATE, action);
+
+        authenticateAs("admin");
+        GateResult gate = service.gateAlwaysWithPayload(ActionType.ROLE_PERMISSION_UPDATE, 7L, "1,2,3", "角色: 运维");
+
+        assertEquals("1,2,3", store.get(gate.requestId()).getPayload());
+
+        authenticateAs("approver");
+        service.approve(gate.requestId());
+
+        verify(action).apply(7L, "1,2,3");
+    }
+
+    @Test
+    void selfApprovalIsBlockedForPayloadCarryingActionsToo() {
+        PayloadChangeAction action = mock(PayloadChangeAction.class);
+        service.registerWithPayload(ActionType.USER_PASSWORD_RESET, action);
+
+        authenticateAs("admin");
+        GateResult gate = service.gateAlwaysWithPayload(ActionType.USER_PASSWORD_RESET, 3L, "$2a$10$fakehash", "用户: carol");
+
+        // Still "admin" - the same user who requested the reset.
+        assertThrows(ResponseStatusException.class, () -> service.approve(gate.requestId()));
+        verify(action, never()).apply(any(), any());
     }
 }

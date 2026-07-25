@@ -11,6 +11,7 @@ public class ChangeRequestEntity {
     private String actionType;
     private Long targetId;
     private String targetSummary;
+    private String payload;
     private String requester;
     private String status;
     private String approver;

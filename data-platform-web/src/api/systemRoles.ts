@@ -1,5 +1,6 @@
 import { http } from './http';
 import type { ApiResponse } from './auth';
+import type { ActionResult } from './approval';
 
 export interface SystemRoleRecord {
   id: number;
@@ -38,6 +39,9 @@ export function getSystemRoleMenus(id: number) {
   return http.get<ApiResponse<number[]>>(`${basePath}/${id}/menus`).then(unwrap);
 }
 
+// Always returns PENDING_APPROVAL now - a role's permission set applies
+// platform-wide the instant it's saved, so this always needs a second
+// approver, unlike the environment-conditional gates elsewhere.
 export function assignSystemRoleMenus(id: number, menuIds: number[]) {
-  return http.put<ApiResponse<void>>(`${basePath}/${id}/menus`, { menuIds }).then(unwrap);
+  return http.put<ApiResponse<ActionResult>>(`${basePath}/${id}/menus`, { menuIds }).then(unwrap);
 }

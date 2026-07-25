@@ -15,20 +15,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * Maker-checker gate for the handful of actions that can do real, hard-to-undo
- * damage to a live PROD pipeline (deleting/stopping a CDC source or Flink
- * job, deleting a data source). EnvironmentGuard already requires
- * realtime:env:prod-operate to even attempt one of these on a PROD-tagged
- * resource - this adds a second requirement on top: the action doesn't
- * actually run until a *different* user (system:approval:handle, not the
- * requester) approves it. DEV resources never reach this class at all, so
- * the day-to-day dev/test workflow gets zero added friction.
+ * Maker-checker gate for actions that need a second pair of eyes before
+ * taking effect. Two families:
+ *
+ * - Environment-conditional (gate()): deleting/stopping a CDC source, Flink
+ *   job, or data source only defers to approval when the target is
+ *   PROD-tagged - EnvironmentGuard already requires realtime:env:prod-operate
+ *   to even attempt one of these, this adds the requirement that the action
+ *   doesn't actually run until a *different* user (system:approval:handle,
+ *   not the requester) approves it. DEV resources never reach this class at
+ *   all, so the day-to-day dev/test workflow gets zero added friction.
+ * - Always-on (gateAlways()/gateAlwaysWithPayload()): role permission
+ *   changes and user disable/password-reset have no DEV/PROD distinction to
+ *   condition on - they're sensitive regardless of environment, so every
+ *   call defers, no immediate-path fallback.
  *
  * Each gated controller registers its own apply-callback for the action
- * type(s) it owns (constructor-time, via register()) rather than this
- * service knowing how to delete a CDC source or stop a Flink job itself -
- * those controllers already hold the KafkaConnectClient/FlinkStreamSubmissionClient
- * dependencies needed to do it.
+ * type(s) it owns (constructor-time, via register()/registerWithPayload())
+ * rather than this service knowing how to delete a CDC source or reassign a
+ * role's permissions itself - those controllers already hold the mapper/
+ * client dependencies needed to do it.
  */
 @Service
 public class ChangeApprovalService {
@@ -39,12 +45,26 @@ public class ChangeApprovalService {
         FLINK_STREAM_JOB_DELETE,
         FLINK_STREAM_JOB_STOP,
         FLINK_SQL_JOB_DELETE,
-        FLINK_SQL_JOB_STOP
+        FLINK_SQL_JOB_STOP,
+        ROLE_PERMISSION_UPDATE,
+        USER_DISABLE,
+        USER_PASSWORD_RESET
     }
 
     @FunctionalInterface
     public interface ChangeAction {
         void apply(Long targetId);
+    }
+
+    /**
+     * Variant for actions that need to carry the *proposed* new state
+     * forward until approved (a role's new menu ID list, a user's new
+     * password hash) - unlike delete/stop, there's nothing on the target
+     * row itself to re-derive that state from.
+     */
+    @FunctionalInterface
+    public interface PayloadChangeAction {
+        void apply(Long targetId, String payload);
     }
 
     public record GateResult(boolean pending, Long requestId) {
@@ -66,7 +86,10 @@ public class ChangeApprovalService {
         ActionType.FLINK_STREAM_JOB_DELETE, "删除 Flink 流作业",
         ActionType.FLINK_STREAM_JOB_STOP, "停止 Flink 流作业",
         ActionType.FLINK_SQL_JOB_DELETE, "删除 SQL 流作业",
-        ActionType.FLINK_SQL_JOB_STOP, "停止 SQL 流作业"
+        ActionType.FLINK_SQL_JOB_STOP, "停止 SQL 流作业",
+        ActionType.ROLE_PERMISSION_UPDATE, "修改角色权限",
+        ActionType.USER_DISABLE, "禁用用户",
+        ActionType.USER_PASSWORD_RESET, "重置用户密码"
     );
 
     private final ChangeRequestMapper changeRequestMapper;
@@ -74,6 +97,7 @@ public class ChangeApprovalService {
     private final RealtimeAlertService realtimeAlertService;
     private final String approvalCenterUrl;
     private final Map<ActionType, ChangeAction> actions = new ConcurrentHashMap<>();
+    private final Map<ActionType, PayloadChangeAction> payloadActions = new ConcurrentHashMap<>();
 
     public ChangeApprovalService(
         ChangeRequestMapper changeRequestMapper,
@@ -91,15 +115,37 @@ public class ChangeApprovalService {
         actions.put(type, action);
     }
 
+    public void registerWithPayload(ActionType type, PayloadChangeAction action) {
+        payloadActions.put(type, action);
+    }
+
     /** Only PROD-tagged resources defer to approval; anything else runs immediately. */
     public GateResult gate(ActionType type, Long targetId, String environment, String targetSummary) {
         if (!"PROD".equals(environment)) {
             return GateResult.applied();
         }
+        return createPendingRequest(type, targetId, null, targetSummary);
+    }
+
+    /**
+     * For actions with no environment concept to check - role permission
+     * changes and user account security actions are always sensitive, so
+     * unlike gate() there's no immediate-path fallback here at all.
+     */
+    public GateResult gateAlways(ActionType type, Long targetId, String targetSummary) {
+        return createPendingRequest(type, targetId, null, targetSummary);
+    }
+
+    public GateResult gateAlwaysWithPayload(ActionType type, Long targetId, String payload, String targetSummary) {
+        return createPendingRequest(type, targetId, payload, targetSummary);
+    }
+
+    private GateResult createPendingRequest(ActionType type, Long targetId, String payload, String targetSummary) {
         ChangeRequestEntity request = new ChangeRequestEntity();
         request.setActionType(type.name());
         request.setTargetId(targetId);
         request.setTargetSummary(targetSummary);
+        request.setPayload(payload);
         request.setRequester(currentUsername());
         request.setStatus("PENDING");
         request.setCreatedAt(LocalDateTime.now());
@@ -111,18 +157,27 @@ public class ChangeApprovalService {
     public ChangeRequestEntity approve(Long requestId) {
         ChangeRequestEntity request = requirePending(requestId);
         String approver = requireNotSelfApproval(request);
-        ChangeAction action = actions.get(ActionType.valueOf(request.getActionType()));
         // Let a failure here (e.g. Kafka Connect/Flink unreachable) propagate
         // as an error response and leave the request PENDING - the approver's
         // click didn't actually take effect, so marking it APPROVED anyway
         // would silently lose the fact that nothing happened.
-        action.apply(request.getTargetId());
+        applyAction(request);
         request.setStatus("APPROVED");
         request.setApprover(approver);
         request.setDecidedAt(LocalDateTime.now());
         changeRequestMapper.updateById(request);
         notifyRequester(request, "审批通过：" + describe(request), null);
         return request;
+    }
+
+    private void applyAction(ChangeRequestEntity request) {
+        ActionType type = ActionType.valueOf(request.getActionType());
+        PayloadChangeAction payloadAction = payloadActions.get(type);
+        if (payloadAction != null) {
+            payloadAction.apply(request.getTargetId(), request.getPayload());
+            return;
+        }
+        actions.get(type).apply(request.getTargetId());
     }
 
     public ChangeRequestEntity reject(Long requestId, String reason) {

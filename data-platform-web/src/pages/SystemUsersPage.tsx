@@ -1,6 +1,7 @@
 import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined, ReloadOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
+import { isPendingApproval } from '../api/approval';
 import {
   assignSystemUserRoles,
   createSystemUser,
@@ -73,8 +74,12 @@ export function SystemUsersPage() {
           roleIds: values.roleIds
         });
     request
-      .then(() => {
-        message.success(editing ? '已保存' : '已新建');
+      .then((result) => {
+        if (isPendingApproval(result)) {
+          message.info(`禁用账号需要另一名管理员审批（申请编号 #${result.approvalRequestId}），审批通过后才会生效`);
+        } else {
+          message.success(editing ? '已保存' : '已新建');
+        }
         setModalOpen(false);
         load();
       })
@@ -86,8 +91,12 @@ export function SystemUsersPage() {
     if (!passwordModalUser) return;
     setSaving(true);
     resetSystemUserPassword(passwordModalUser.id, values.newPassword)
-      .then(() => {
-        message.success('密码已重置');
+      .then((result) => {
+        if (isPendingApproval(result)) {
+          message.info(`重置密码需要另一名管理员审批（申请编号 #${result.approvalRequestId}），审批通过后才会生效`);
+        } else {
+          message.success('密码已重置');
+        }
         setPasswordModalUser(null);
       })
       .catch(() => message.error('重置密码失败'))

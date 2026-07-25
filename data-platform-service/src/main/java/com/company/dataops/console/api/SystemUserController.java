@@ -2,6 +2,7 @@ package com.company.dataops.console.api;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.common.PageResult;
 import com.company.dataops.console.entity.RoleEntity;
@@ -10,6 +11,9 @@ import com.company.dataops.console.entity.UserRoleEntity;
 import com.company.dataops.console.mapper.RoleMapper;
 import com.company.dataops.console.mapper.UserMapper;
 import com.company.dataops.console.mapper.UserRoleMapper;
+import com.company.dataops.console.service.approval.ChangeApprovalService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -47,12 +51,25 @@ public class SystemUserController {
     private final RoleMapper roleMapper;
     private final UserRoleMapper userRoleMapper;
     private final PasswordEncoder passwordEncoder;
+    private final ChangeApprovalService changeApprovalService;
+    private final ObjectMapper objectMapper;
 
-    public SystemUserController(UserMapper userMapper, RoleMapper roleMapper, UserRoleMapper userRoleMapper, PasswordEncoder passwordEncoder) {
+    public SystemUserController(
+        UserMapper userMapper,
+        RoleMapper roleMapper,
+        UserRoleMapper userRoleMapper,
+        PasswordEncoder passwordEncoder,
+        ChangeApprovalService changeApprovalService,
+        ObjectMapper objectMapper
+    ) {
         this.userMapper = userMapper;
         this.roleMapper = roleMapper;
         this.userRoleMapper = userRoleMapper;
         this.passwordEncoder = passwordEncoder;
+        this.changeApprovalService = changeApprovalService;
+        this.objectMapper = objectMapper;
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.USER_DISABLE, this::applyUpdate);
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.USER_PASSWORD_RESET, this::applyPasswordReset);
     }
 
     @GetMapping
@@ -93,9 +110,29 @@ public class SystemUserController {
         return ApiResponse.ok();
     }
 
+    // Only the disable transition is deferred - editing a display name/email
+    // is harmless and shouldn't need a second approver every time. When it
+    // is deferred, the whole request (not just the status field) rides
+    // along as the payload, so an edit bundled into the same PUT that
+    // disables the account applies atomically once approved rather than
+    // silently dropping the other field changes.
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('system:user:update')")
-    public ApiResponse<Void> update(@PathVariable Long id, @Valid @RequestBody UpdateUserRequest request) {
+    public ApiResponse<ActionResult> update(@PathVariable Long id, @Valid @RequestBody UpdateUserRequest request) {
+        UserEntity user = requireUser(id);
+        boolean disabling = request.status() != null && !request.status().isBlank()
+            && !"ENABLED".equals(request.status()) && "ENABLED".equals(user.getStatus());
+        if (disabling) {
+            ChangeApprovalService.GateResult gate = changeApprovalService.gateAlwaysWithPayload(
+                ChangeApprovalService.ActionType.USER_DISABLE, id, writePayload(request), "用户: " + user.getUsername());
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyUpdate(id, writePayload(request));
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyUpdate(Long id, String payload) {
+        UpdateUserRequest request = readPayload(payload, UpdateUserRequest.class);
         UserEntity user = requireUser(id);
         user.setDisplayName(request.displayName());
         user.setEmail(request.email());
@@ -103,7 +140,6 @@ public class SystemUserController {
             user.setStatus(request.status());
         }
         userMapper.updateById(user);
-        return ApiResponse.ok();
     }
 
     @DeleteMapping("/{id}")
@@ -118,13 +154,25 @@ public class SystemUserController {
         return ApiResponse.ok();
     }
 
+    // Always deferred - resetting someone else's password is effectively an
+    // account takeover primitive (reset it, then log in as them), so unlike
+    // a display-name edit there's no "harmless" case to fast-path. The hash
+    // is computed now and carried as the payload rather than the plaintext,
+    // so a look at pending change_request rows never exposes a real password.
     @PostMapping("/{id}/reset-password")
     @PreAuthorize("hasAuthority('system:user:reset-password')")
-    public ApiResponse<Void> resetPassword(@PathVariable Long id, @Valid @RequestBody ResetPasswordRequest request) {
+    public ApiResponse<ActionResult> resetPassword(@PathVariable Long id, @Valid @RequestBody ResetPasswordRequest request) {
         UserEntity user = requireUser(id);
-        user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        String newHash = passwordEncoder.encode(request.newPassword());
+        ChangeApprovalService.GateResult gate = changeApprovalService.gateAlwaysWithPayload(
+            ChangeApprovalService.ActionType.USER_PASSWORD_RESET, id, newHash, "用户: " + user.getUsername());
+        return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+    }
+
+    private void applyPasswordReset(Long id, String newHash) {
+        UserEntity user = requireUser(id);
+        user.setPasswordHash(newHash);
         userMapper.updateById(user);
-        return ApiResponse.ok();
     }
 
     @GetMapping("/{id}/roles")
@@ -152,6 +200,22 @@ public class SystemUserController {
             userRoleMapper.insert(link);
         });
         return ApiResponse.ok();
+    }
+
+    private String writePayload(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "序列化审批数据失败");
+        }
+    }
+
+    private <T> T readPayload(String payload, Class<T> type) {
+        try {
+            return objectMapper.readValue(payload, type);
+        } catch (JsonProcessingException exception) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "解析审批数据失败");
+        }
     }
 
     // True when userId currently holds the ADMIN role, no other user does,

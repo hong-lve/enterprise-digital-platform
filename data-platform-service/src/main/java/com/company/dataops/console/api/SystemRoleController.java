@@ -1,6 +1,7 @@
 package com.company.dataops.console.api;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.entity.RoleEntity;
 import com.company.dataops.console.entity.RoleMenuEntity;
@@ -8,9 +9,12 @@ import com.company.dataops.console.entity.UserRoleEntity;
 import com.company.dataops.console.mapper.RoleMapper;
 import com.company.dataops.console.mapper.RoleMenuMapper;
 import com.company.dataops.console.mapper.UserRoleMapper;
+import com.company.dataops.console.service.approval.ChangeApprovalService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -37,11 +41,14 @@ public class SystemRoleController {
     private final RoleMapper roleMapper;
     private final RoleMenuMapper roleMenuMapper;
     private final UserRoleMapper userRoleMapper;
+    private final ChangeApprovalService changeApprovalService;
 
-    public SystemRoleController(RoleMapper roleMapper, RoleMenuMapper roleMenuMapper, UserRoleMapper userRoleMapper) {
+    public SystemRoleController(RoleMapper roleMapper, RoleMenuMapper roleMenuMapper, UserRoleMapper userRoleMapper, ChangeApprovalService changeApprovalService) {
         this.roleMapper = roleMapper;
         this.roleMenuMapper = roleMenuMapper;
         this.userRoleMapper = userRoleMapper;
+        this.changeApprovalService = changeApprovalService;
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.ROLE_PERMISSION_UPDATE, this::applyAssignMenus);
     }
 
     @GetMapping
@@ -102,19 +109,33 @@ public class SystemRoleController {
             .toList());
     }
 
+    // Always deferred to approval, no immediate path - unlike delete/stop on
+    // a PROD-tagged resource, a role's permission set applies platform-wide
+    // the instant it's saved (self-escalation, or accidentally locking out
+    // every other admin), so there's no "DEV" equivalent where skipping
+    // review would be safe.
     @PutMapping("/{id}/menus")
     @PreAuthorize("hasAuthority('system:role:assign-menu')")
-    public ApiResponse<Void> assignMenus(@PathVariable Long id, @RequestBody AssignMenusRequest request) {
-        requireRole(id);
-        roleMenuMapper.delete(new LambdaQueryWrapper<RoleMenuEntity>().eq(RoleMenuEntity::getRoleId, id));
+    public ApiResponse<ActionResult> assignMenus(@PathVariable Long id, @RequestBody AssignMenusRequest request) {
+        RoleEntity role = requireRole(id);
         List<Long> menuIds = request.menuIds() == null ? List.of() : request.menuIds();
+        String payload = menuIds.stream().map(String::valueOf).collect(Collectors.joining(","));
+        ChangeApprovalService.GateResult gate = changeApprovalService.gateAlwaysWithPayload(
+            ChangeApprovalService.ActionType.ROLE_PERMISSION_UPDATE, id, payload, "角色: " + role.getName());
+        return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+    }
+
+    private void applyAssignMenus(Long id, String payload) {
+        roleMenuMapper.delete(new LambdaQueryWrapper<RoleMenuEntity>().eq(RoleMenuEntity::getRoleId, id));
+        List<Long> menuIds = payload == null || payload.isBlank()
+            ? List.of()
+            : Arrays.stream(payload.split(",")).map(Long::parseLong).toList();
         menuIds.forEach(menuId -> {
             RoleMenuEntity link = new RoleMenuEntity();
             link.setRoleId(id);
             link.setMenuId(menuId);
             roleMenuMapper.insert(link);
         });
-        return ApiResponse.ok();
     }
 
     private RoleEntity requireRole(Long id) {

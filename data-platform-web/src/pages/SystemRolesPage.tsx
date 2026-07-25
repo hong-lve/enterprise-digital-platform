@@ -2,6 +2,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SafetyOutli
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tree, Typography, message } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import { useEffect, useMemo, useState } from 'react';
+import { isPendingApproval } from '../api/approval';
 import { buildMenuTree, listSystemMenus, type SystemMenuRecord, type SystemMenuTreeNode } from '../api/systemMenus';
 import {
   assignSystemRoleMenus,
@@ -93,8 +94,12 @@ export function SystemRolesPage() {
     if (!menuModalRole) return;
     setSaving(true);
     assignSystemRoleMenus(menuModalRole.id, checkedMenuIds)
-      .then(() => {
-        message.success('已保存');
+      .then((result) => {
+        if (isPendingApproval(result)) {
+          message.info(`权限变更需要另一名管理员审批（申请编号 #${result.approvalRequestId}），审批通过后才会生效`);
+        } else {
+          message.success('已保存');
+        }
         setMenuModalRole(null);
       })
       .catch(() => message.error('保存失败'))
