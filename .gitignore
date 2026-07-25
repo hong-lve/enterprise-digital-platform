@@ -16,6 +16,11 @@ docker/bigdata/flink-lib/*.jar
 # Runtime upload storage (data-platform-service's local jar-storage fallback) - generated data, not source.
 data-platform-service/uploads/
 
+# MySQL control-plane backups (docker/bigdata/backup/backup.sh output) -
+# generated data that can contain encrypted-but-real data source credentials,
+# not meant to be tracked.
+docker/bigdata/backup/dumps/
+
 # Local secrets / environment overrides - never commit real credentials.
 .env
 .env.*
