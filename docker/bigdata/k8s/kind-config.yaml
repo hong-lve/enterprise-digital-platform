@@ -1,0 +1,13 @@
+# 3-node kind cluster (1 control-plane + 2 workers) for the Flink
+# Kubernetes Operator HA demo - see flinkdeployment-ha.yaml. Two worker
+# nodes so the FlinkDeployment's 2 JobManager replicas can actually land on
+# different nodes (closer to what HA is meant to survive) rather than
+# both ending up on the same single node, which a 1-node kind cluster
+# would force regardless of replica count.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: flink-ha
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

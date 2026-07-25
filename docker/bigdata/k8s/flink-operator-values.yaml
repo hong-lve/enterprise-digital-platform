@@ -1,0 +1,17 @@
+# webhook.create=false avoids needing cert-manager for the validating
+# webhook's TLS cert (confirmed live in an earlier round of this same
+# setup - cert-manager is a real dependency chain for something this
+# demo doesn't need: the operator works fine without the webhook, it just
+# loses the "reject a malformed FlinkDeployment before it's even stored"
+# fast-fail and falls back to erroring out during reconciliation instead).
+webhook:
+  create: false
+
+operatorPod:
+  resources:
+    requests:
+      memory: 500Mi
+      cpu: 200m
+    limits:
+      memory: 1Gi
+      cpu: "1"

@@ -1,0 +1,99 @@
+# HA demo FlinkDeployment - 2 JobManager replicas with Kubernetes-native
+# leader election (high-availability.type: kubernetes), backed by local-path
+# PVCs rather than an external object store. kind's default StorageClass
+# (rancher.io/local-path) uses WaitForFirstConsumer binding, so whichever
+# node the first pod needing a given PVC lands on becomes that PV's home -
+# every later pod needing the *same* PVC gets scheduled there too by
+# Kubernetes itself, which is exactly what a ReadWriteOnce volume shared
+# across JobManager replicas needs. No manual node pinning required despite
+# the cluster having multiple worker nodes.
+#
+# Uses the Flink image's own bundled example job (StateMachineExample) - the
+# point of this deployment is proving the HA mechanism itself (leader
+# failover, checkpoint recovery), not running this project's actual CDC
+# sink jars on Kubernetes.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-ha-storage
+  namespace: flink
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-checkpoints
+  namespace: flink
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-savepoints
+  namespace: flink
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: flink-ha-demo
+  namespace: flink
+spec:
+  image: flink:1.19.3
+  flinkVersion: v1_19
+  serviceAccount: flink
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
+    high-availability.type: kubernetes
+    high-availability.storageDir: file:///opt/flink/ha
+    kubernetes.operator.periodic-savepoint.interval: 10m
+    state.checkpoints.dir: file:///opt/flink/checkpoints
+    state.savepoints.dir: file:///opt/flink/savepoints
+    execution.checkpointing.interval: "30s"
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          volumeMounts:
+            - mountPath: /opt/flink/ha
+              name: flink-ha-storage
+            - mountPath: /opt/flink/checkpoints
+              name: flink-checkpoints
+            - mountPath: /opt/flink/savepoints
+              name: flink-savepoints
+      volumes:
+        - name: flink-ha-storage
+          persistentVolumeClaim:
+            claimName: flink-ha-storage
+        - name: flink-checkpoints
+          persistentVolumeClaim:
+            claimName: flink-checkpoints
+        - name: flink-savepoints
+          persistentVolumeClaim:
+            claimName: flink-savepoints
+  jobManager:
+    replicas: 2
+    resource:
+      memory: "1024m"
+      cpu: 1
+  taskManager:
+    resource:
+      memory: "1024m"
+      cpu: 1
+  job:
+    jarURI: local:///opt/flink/examples/streaming/StateMachineExample.jar
+    parallelism: 2
+    upgradeMode: savepoint
+    state: running
