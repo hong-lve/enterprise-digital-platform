@@ -23,6 +23,7 @@ import { useMemo } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import type { MenuNode } from '../api/auth';
 import { logout } from '../api/auth';
+import { NotificationBell } from './NotificationBell';
 import { useAuthStore } from '../store/auth';
 
 const { Header, Sider, Content } = Layout;
@@ -84,6 +85,7 @@ export function AppShell() {
         <Header className="app-header">
           <Typography.Text strong>实时计算平台</Typography.Text>
           <Space>
+            <NotificationBell />
             <Button type="link" icon={<UserOutlined />}>{displayName}</Button>
             <Button
               aria-label="退出登录"

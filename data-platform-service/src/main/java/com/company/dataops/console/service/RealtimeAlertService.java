@@ -9,6 +9,7 @@ import com.company.dataops.console.mapper.AlertHistoryMapper;
 import com.company.dataops.console.mapper.MessageMapper;
 import com.company.dataops.console.mapper.MessageReceiverMapper;
 import com.company.dataops.console.mapper.UserMapper;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -51,6 +52,41 @@ public class RealtimeAlertService {
 
     public void notifyRecovery(AlertSubject subject, String owner, String title, String linkUrl) {
         send(subject, owner, title, "已恢复正常", "RECOVERY", linkUrl);
+    }
+
+    /**
+     * Broadcast variant of send()'s in-app-message half, for events with no
+     * single natural "owner" (e.g. a PROD change request: every current
+     * holder of the approval permission needs to see it, not one fixed
+     * user) - one shared MessageEntity, one MessageReceiverEntity per
+     * recipient. No AlertSubject/alert_history recording here: that table
+     * models health-state transitions of a monitored entity, which a
+     * one-off "please review this" event isn't.
+     */
+    public void notifyMultiple(List<String> owners, String title, String content, String type, String linkUrl) {
+        webhookAlertSender.send(title, content, type, linkUrl);
+        if (owners == null || owners.isEmpty()) {
+            return;
+        }
+        try {
+            MessageEntity message = new MessageEntity();
+            message.setTitle(title);
+            message.setContent(content);
+            message.setType(type);
+            message.setLinkUrl(linkUrl);
+            message.setSender("system");
+            messageMapper.insert(message);
+
+            for (String owner : owners) {
+                MessageReceiverEntity receiver = new MessageReceiverEntity();
+                receiver.setMessageId(message.getId());
+                receiver.setReceiver(owner);
+                receiver.setReadStatus("UNREAD");
+                messageReceiverMapper.insert(receiver);
+            }
+        } catch (Exception exception) {
+            LOGGER.warn("Failed to broadcast {} message to {} recipients: {}", type, owners.size(), exception.getMessage());
+        }
     }
 
     /**

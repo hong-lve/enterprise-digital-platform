@@ -2,9 +2,13 @@ package com.company.dataops.console.service.approval;
 
 import com.company.dataops.console.entity.ChangeRequestEntity;
 import com.company.dataops.console.mapper.ChangeRequestMapper;
+import com.company.dataops.console.security.LocalAuthorityService;
+import com.company.dataops.console.service.RealtimeAlertService;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
@@ -53,11 +57,34 @@ public class ChangeApprovalService {
         }
     }
 
+    private static final String APPROVAL_PERMISSION = "system:approval:handle";
+
+    private static final Map<ActionType, String> ACTION_LABEL = Map.of(
+        ActionType.DATA_SOURCE_DELETE, "删除数据源",
+        ActionType.CDC_SOURCE_DELETE, "删除 CDC 数据源",
+        ActionType.CDC_SOURCE_STOP, "停止 CDC 数据源",
+        ActionType.FLINK_STREAM_JOB_DELETE, "删除 Flink 流作业",
+        ActionType.FLINK_STREAM_JOB_STOP, "停止 Flink 流作业",
+        ActionType.FLINK_SQL_JOB_DELETE, "删除 SQL 流作业",
+        ActionType.FLINK_SQL_JOB_STOP, "停止 SQL 流作业"
+    );
+
     private final ChangeRequestMapper changeRequestMapper;
+    private final LocalAuthorityService authorityService;
+    private final RealtimeAlertService realtimeAlertService;
+    private final String approvalCenterUrl;
     private final Map<ActionType, ChangeAction> actions = new ConcurrentHashMap<>();
 
-    public ChangeApprovalService(ChangeRequestMapper changeRequestMapper) {
+    public ChangeApprovalService(
+        ChangeRequestMapper changeRequestMapper,
+        LocalAuthorityService authorityService,
+        RealtimeAlertService realtimeAlertService,
+        @Value("${platform.web.frontend-url}") String frontendUrl
+    ) {
         this.changeRequestMapper = changeRequestMapper;
+        this.authorityService = authorityService;
+        this.realtimeAlertService = realtimeAlertService;
+        this.approvalCenterUrl = frontendUrl + "/system/approval-center";
     }
 
     public void register(ActionType type, ChangeAction action) {
@@ -77,6 +104,7 @@ public class ChangeApprovalService {
         request.setStatus("PENDING");
         request.setCreatedAt(LocalDateTime.now());
         changeRequestMapper.insert(request);
+        notifyApprovers(request);
         return GateResult.pending(request.getId());
     }
 
@@ -93,6 +121,7 @@ public class ChangeApprovalService {
         request.setApprover(approver);
         request.setDecidedAt(LocalDateTime.now());
         changeRequestMapper.updateById(request);
+        notifyRequester(request, "审批通过：" + describe(request), null);
         return request;
     }
 
@@ -104,7 +133,36 @@ public class ChangeApprovalService {
         request.setRejectReason(reason);
         request.setDecidedAt(LocalDateTime.now());
         changeRequestMapper.updateById(request);
+        notifyRequester(request, "审批被驳回：" + describe(request), reason);
         return request;
+    }
+
+    private void notifyApprovers(ChangeRequestEntity request) {
+        List<String> approvers = authorityService.usernamesWithPermission(APPROVAL_PERMISSION).stream()
+            .filter(username -> !username.equals(request.getRequester()))
+            .toList();
+        realtimeAlertService.notifyMultiple(
+            approvers,
+            "有生产环境变更待审批",
+            request.getRequester() + " 申请" + describe(request) + "，请前往审批中心处理",
+            "APPROVAL_PENDING",
+            approvalCenterUrl
+        );
+    }
+
+    private void notifyRequester(ChangeRequestEntity request, String title, String reason) {
+        realtimeAlertService.notifyMultiple(
+            List.of(request.getRequester()),
+            title,
+            reason != null && !reason.isBlank() ? "驳回理由：" + reason : null,
+            "APPROVAL_DECIDED",
+            approvalCenterUrl
+        );
+    }
+
+    private String describe(ChangeRequestEntity request) {
+        String label = ACTION_LABEL.getOrDefault(ActionType.valueOf(request.getActionType()), request.getActionType());
+        return label + (request.getTargetSummary() != null ? "（" + request.getTargetSummary() + "）" : "");
     }
 
     private String requireNotSelfApproval(ChangeRequestEntity request) {

@@ -56,6 +56,45 @@ public class LocalAuthorityService {
             .toList();
     }
 
+    /**
+     * Reverse direction of permissionsFor() - who holds a given permission,
+     * rather than what a given user holds. Needed to find who to notify for
+     * a permission-gated review queue (e.g. system:approval:handle) without
+     * hardcoding a specific role or user.
+     */
+    public List<String> usernamesWithPermission(String permission) {
+        List<Long> menuIds = menuMapper.selectList(new LambdaQueryWrapper<MenuEntity>().eq(MenuEntity::getPermission, permission))
+            .stream()
+            .map(MenuEntity::getId)
+            .toList();
+        if (menuIds.isEmpty()) {
+            return List.of();
+        }
+        List<Long> roleIds = roleMenuMapper.selectList(new LambdaQueryWrapper<RoleMenuEntity>())
+            .stream()
+            .filter(row -> menuIds.contains(row.getMenuId()))
+            .map(RoleMenuEntity::getRoleId)
+            .distinct()
+            .toList();
+        if (roleIds.isEmpty()) {
+            return List.of();
+        }
+        List<Long> userIds = userRoleMapper.selectList(new LambdaQueryWrapper<UserRoleEntity>())
+            .stream()
+            .filter(row -> roleIds.contains(row.getRoleId()))
+            .map(UserRoleEntity::getUserId)
+            .distinct()
+            .toList();
+        if (userIds.isEmpty()) {
+            return List.of();
+        }
+        return userMapper.selectBatchIds(userIds)
+            .stream()
+            .filter(user -> "ENABLED".equals(user.getStatus()))
+            .map(UserEntity::getUsername)
+            .toList();
+    }
+
     public List<MenuEntity> assignedMenusFor(Long userId) {
         List<Long> roleIds = roleIdsFor(userId);
         if (roleIds.isEmpty()) {
