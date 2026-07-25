@@ -45,6 +45,9 @@ jobs:
       - name: Install dependencies
         working-directory: data-platform-web
         run: npm ci
+      - name: Test
+        working-directory: data-platform-web
+        run: npm run test
       - name: Type-check + build
         working-directory: data-platform-web
         run: npm run build
