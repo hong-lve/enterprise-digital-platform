@@ -474,6 +474,38 @@ services:
       - doris-fe-meta:/opt/apache-doris/fe/doris-meta
       - doris-be-storage:/opt/apache-doris/be/storage
 
+  # ---------- Doris: 2 more BE-only nodes (replication_num=3 across all 3) ----------
+  # A single BE is a single point of failure for anything sinking into Doris
+  # - confirmed live earlier that even one BE flaking out (a stale/duplicate
+  # backend registration) breaks stream loads outright. These use the
+  # official standalone be-2.1.11 image (not the all-in-one image "doris"
+  # above uses, which always starts FE+BE together and has no BE-only mode)
+  # in its "assign mode" to join the existing FE as additional backends -
+  # see doris-be-entrypoint-wrapper.sh for why that needs a small wrapper.
+  doris-be2:
+    image: apache/doris:be-2.1.11
+    container_name: bigdata-doris-be2
+    profiles: ["doris"]
+    restart: unless-stopped
+    depends_on:
+      - doris
+    entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
+    volumes:
+      - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
+      - doris-be2-storage:/opt/apache-doris/be/storage
+
+  doris-be3:
+    image: apache/doris:be-2.1.11
+    container_name: bigdata-doris-be3
+    profiles: ["doris"]
+    restart: unless-stopped
+    depends_on:
+      - doris
+    entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
+    volumes:
+      - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
+      - doris-be3-storage:/opt/apache-doris/be/storage
+
   # ---------- MinIO (S3-compatible object storage) ----------
   # Backs data-platform-service's JarStorageService (uploaded Flink job
   # JARs) - a real object store instead of the service's local disk, same
@@ -573,6 +605,8 @@ volumes:
   redis-data:
   doris-fe-meta:
   doris-be-storage:
+  doris-be2-storage:
+  doris-be3-storage:
   minio-data:
   prometheus-data:
   loki-data:
