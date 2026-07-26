@@ -24,6 +24,13 @@ x-kafka-common-env: &kafka-common-env
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
   KAFKA_DEFAULT_REPLICATION_FACTOR: 3
   KAFKA_MIN_INSYNC_REPLICAS: 2
+  # Debezium's auto-created CDC topics inherited this cluster default
+  # (previously unset, so Kafka's own hardcoded default of 1 applied) -
+  # confirmed live that a single-partition CDC topic caps consumer
+  # parallelism at 1 no matter how many Flink TaskManager slots exist, since
+  # a single partition can only ever be read by one consumer at a time. 3
+  # brokers fixed availability; this fixes the separate throughput ceiling.
+  KAFKA_NUM_PARTITIONS: 6
 
 services:
   # ---------- MySQL (primary) ----------
