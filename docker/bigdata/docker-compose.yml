@@ -415,73 +415,71 @@ services:
     volumes:
       - redis-data:/data
 
-  # ---------- Doris (all-in-one, opt-in via --profile doris) ----------
+  # ---------- Doris (opt-in via --profile doris): 1 FE + 3 BE, all 2.1.11 ----------
   # Alternative OLAP sink for "SQL 流作�? alongside ClickHouse - unlike
   # ClickHouse, Doris's Unique Key model has real primary-key upsert
   # (including delete) at the storage layer, so a SQL job can mirror a CDC
   # changelog into it directly without the aggregate-before-sink workaround
   # ClickHouse needs (see flink-connectors/clickhouse-jdbc-dialect).
   #
-  # NOT in the default `docker compose up -d` - profile-gated because this
-  # was measured to genuinely not fit alongside the rest of this environment:
-  # the existing Hive/Spark/Flink/Kafka/ClickHouse containers already use
-  # ~4.4GB of this environment's 7.6GB Docker memory allocation, and even
-  # though Doris's own footprint is a modest ~1.6GB once FE+BE are up, its
-  # own internal safety check refused to execute a query with that little
-  # system memory left over (rejected with a "sys available memory below low
-  # water mark" error during real testing, not a guess). Apache Doris's own
-  # quickstart docs recommend 8GB+ free for this all-in-one image - bump
-  # Docker Desktop's memory limit at least that much before doing
-  # `docker compose --profile doris up -d doris`.
+  # NOT in the default `docker compose up -d` - profile-gated, same memory
+  # reasoning as before (Apache Doris's own quickstart docs recommend 8GB+
+  # free; bump Docker Desktop's memory limit before
+  # `docker compose --profile doris up -d`).
   #
-  # doris-fe-meta/doris-be-storage volumes below persist FE metadata and BE
-  # tablet data across container recreation - confirmed these are the actual
-  # paths via `du -sh` inside a running container (fe.conf's meta_dir and
-  # be.conf's storage_root_path both default to $DORIS_HOME/<name>, i.e.
-  # /opt/apache-doris/fe/doris-meta and /opt/apache-doris/be/storage
-  # respectively; both commented-out in the shipped conf files, so this just
-  # keeps the image's own defaults, not a custom path). Added after this
-  # environment's Doris data was wiped by an unrelated whole-Docker-restart
-  # (Doris has no HA/replication - see doris-entrypoint-wrapper.sh - so unlike
-  # ClickHouse/Oracle this was a real, not hypothetical, gap).
+  # This used to be a single apache/doris:doris-all-in-one-2.1.0 container
+  # (FE+BE bundled) plus 2 extra standalone BEs for replication_num=3. Split
+  # apart after that bundled BE - a 2.1.0-rc11 release candidate build -
+  # crashed twice under real stream-load traffic with a genuine internal bug
+  # ("string column length is too large", SIGABRT in
+  # ColumnString::insert_indices_from), while the standalone be-2.1.11 nodes
+  # never crashed under the same load. Migrated the FE role onto the official
+  # standalone fe-2.1.11 image instead (same doris-fe-meta volume, RECOVERY=
+  # true tells it to adopt the existing non-empty doris-meta directory as its
+  # own rather than bootstrapping fresh - confirmed live that all databases/
+  # tables/data carried over with zero loss), and replaced the crash-prone
+  # embedded BE with a 3rd standalone be-2.1.11 node (doris-be1) - its tablet
+  # replicas were migrated off via ALTER SYSTEM DECOMMISSION BACKEND first
+  # where that succeeded; a handful of the Doris-internal __internal_schema
+  # audit-log/stats tablets got stuck mid-migration (not application data)
+  # and were dropped with the node rather than chased further.
   #
-  # entrypoint/command override: the image's own /usr/local/bin/entry_point.sh
-  # always registers its backend with FE using a hard-coded "127.0.0.1"
-  # (confirmed by reading that script - it's not derived from be.conf), which
-  # only resolves to "this container" from FE's own process, not from other
-  # containers like flink-jobmanager trying to Stream Load into it. This
-  # can't be avoided by pre-configuring anything; doris-entrypoint-wrapper.sh
-  # runs the real entrypoint unmodified and then corrects the registration
-  # in place (fix be.conf, restart BE, drop the bad registration, re-add
-  # with this container's real Docker network address) - see that script's
-  # own comments for the full sequence, verified live against a real
-  # cross-container CDC-to-Doris Flink SQL job.
+  # doris-fe-meta persists FE metadata across container recreation - this is
+  # the actual path Doris uses (fe.conf's meta_dir, confirmed via `du -sh`
+  # inside a running container), not a custom path.
   doris:
-    image: apache/doris:doris-all-in-one-2.1.0
+    image: apache/doris:fe-2.1.11
     container_name: bigdata-doris
     profiles: ["doris"]
-    # Kept running continuously (unlike other profile-gated services here,
-    # which are only ever started for a point-in-time test) - restarts it
-    # after a crash or Docker Desktop restart without needing a manual
-    # `docker compose --profile doris up -d doris` each time.
     restart: unless-stopped
-    entrypoint: ["/bin/bash", "/doris-entrypoint-wrapper.sh"]
+    environment:
+      RECOVERY: "true"
     ports:
       - "8030:8030" # FE HTTP - Stream Load endpoint (what the sink writes through) + web UI
       - "9030:9030" # FE MySQL protocol - `mysql -h127.0.0.1 -P9030 -uroot` for manual table setup/debugging
     volumes:
-      - ./doris-entrypoint-wrapper.sh:/doris-entrypoint-wrapper.sh:ro
       - doris-fe-meta:/opt/apache-doris/fe/doris-meta
-      - doris-be-storage:/opt/apache-doris/be/storage
 
-  # ---------- Doris: 2 more BE-only nodes (replication_num=3 across all 3) ----------
+  # ---------- Doris: 3 standalone BE nodes (replication_num=3) ----------
   # A single BE is a single point of failure for anything sinking into Doris
-  # - confirmed live earlier that even one BE flaking out (a stale/duplicate
-  # backend registration) breaks stream loads outright. These use the
-  # official standalone be-2.1.11 image (not the all-in-one image "doris"
-  # above uses, which always starts FE+BE together and has no BE-only mode)
-  # in its "assign mode" to join the existing FE as additional backends -
-  # see doris-be-entrypoint-wrapper.sh for why that needs a small wrapper.
+  # - confirmed live that even one BE flaking out (a stale/duplicate backend
+  # registration, or the crash described above) breaks stream loads outright.
+  # All three use the official standalone be-2.1.11 image in its "assign
+  # mode" to join the FE as backends - see doris-be-entrypoint-wrapper.sh for
+  # why that needs a small wrapper (assign mode's FE_MASTER_IP must be a
+  # literal IP; this compose file has no static IPs to hardcode one).
+  doris-be1:
+    image: apache/doris:be-2.1.11
+    container_name: bigdata-doris-be1
+    profiles: ["doris"]
+    restart: unless-stopped
+    depends_on:
+      - doris
+    entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
+    volumes:
+      - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
+      - doris-be1-storage:/opt/apache-doris/be/storage
+
   doris-be2:
     image: apache/doris:be-2.1.11
     container_name: bigdata-doris-be2
@@ -604,7 +602,7 @@ volumes:
   oracle-data:
   redis-data:
   doris-fe-meta:
-  doris-be-storage:
+  doris-be1-storage:
   doris-be2-storage:
   doris-be3-storage:
   minio-data:
