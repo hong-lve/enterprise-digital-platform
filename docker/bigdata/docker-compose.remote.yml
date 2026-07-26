@@ -35,6 +35,7 @@ services:
   mysql:
     image: mysql:8.0
     container_name: bigdata-mysql
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: "123456" # matches the app's existing MYSQL_PASSWORD default
     ports:
@@ -69,6 +70,7 @@ services:
   flink-jobmanager:
     image: flink:1.19-java17
     container_name: bigdata-flink-jobmanager
+    restart: unless-stopped
     depends_on:
       flink-state-init:
         condition: service_completed_successfully
@@ -131,6 +133,7 @@ services:
   flink-taskmanager:
     image: flink:1.19-java17
     container_name: bigdata-flink-taskmanager
+    restart: unless-stopped
     depends_on:
       - flink-jobmanager
     command: taskmanager
@@ -175,6 +178,7 @@ services:
   flink-sql-gateway:
     image: flink:1.19-java17
     container_name: bigdata-flink-sql-gateway
+    restart: unless-stopped
     depends_on:
       - flink-jobmanager
     command: >
@@ -219,6 +223,7 @@ services:
   kafka:
     image: apache/kafka:3.7.0
     container_name: bigdata-kafka
+    restart: unless-stopped
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 1
@@ -232,6 +237,7 @@ services:
   kafka-2:
     image: apache/kafka:3.7.0
     container_name: bigdata-kafka-2
+    restart: unless-stopped
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 2
@@ -243,6 +249,7 @@ services:
   kafka-3:
     image: apache/kafka:3.7.0
     container_name: bigdata-kafka-3
+    restart: unless-stopped
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 3
@@ -262,6 +269,7 @@ services:
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
     container_name: bigdata-schema-registry
+    restart: unless-stopped
     depends_on:
       - kafka
     environment:
@@ -283,6 +291,7 @@ services:
       dockerfile: Dockerfile
     image: data-platform-kafka-connect:3.0.0.Final
     container_name: bigdata-kafka-connect
+    restart: unless-stopped
     depends_on:
       - kafka
       - schema-registry
@@ -321,6 +330,7 @@ services:
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:latest
     container_name: bigdata-kafka-ui
+    restart: unless-stopped
     depends_on:
       - kafka
       - kafka-connect
@@ -340,6 +350,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:26.6
     container_name: bigdata-clickhouse
+    restart: unless-stopped
     environment:
       CLICKHOUSE_DB: realtime_analytics
       CLICKHOUSE_USER: realtime
@@ -384,6 +395,7 @@ services:
   oracle:
     image: gvenzl/oracle-free:23.9-slim
     container_name: bigdata-oracle
+    restart: unless-stopped
     environment:
       ORACLE_PASSWORD: oracle123
       APP_USER: realtime
@@ -409,6 +421,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: bigdata-redis
+    restart: unless-stopped
     command: redis-server --requirepass redis123 --appendonly yes
     ports:
       - "127.0.0.1:6379:6379"
@@ -515,6 +528,7 @@ services:
   minio:
     image: minio/minio:latest
     container_name: bigdata-minio
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -539,6 +553,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.0
     container_name: bigdata-prometheus
+    restart: unless-stopped
     mem_limit: 200m
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -551,6 +566,7 @@ services:
   loki:
     image: grafana/loki:2.9.8
     container_name: bigdata-loki
+    restart: unless-stopped
     mem_limit: 200m
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
@@ -560,6 +576,7 @@ services:
   promtail:
     image: grafana/promtail:2.9.8
     container_name: bigdata-promtail
+    restart: unless-stopped
     mem_limit: 100m
     depends_on:
       - loki
@@ -572,6 +589,7 @@ services:
   grafana:
     image: grafana/grafana:11.1.0
     container_name: bigdata-grafana
+    restart: unless-stopped
     mem_limit: 200m
     depends_on:
       - prometheus
