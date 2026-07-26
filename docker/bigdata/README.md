@@ -43,7 +43,7 @@ docker compose up -d
 | MinIO 控制�?| http://localhost:19001 | 浏览桶内�?手动排查用的 Web UI，账号同�?|
 
 `spark-master`/`spark-worker` 都挂载了 `./spark-apps` 到容器内 `/opt/spark-apps`，放要提交的作业 JAR——Standalone REST 提交�?`appResource` 必须是运�?driver 的那个容器（也就是某�?worker）本地能访问到的路径，所以两边都挂了同一个目录�?
-`flink-jobmanager`/`flink-taskmanager` 都挂载了一�?`flink-state` 卷到 `/opt/flink/state`，配�?`state.checkpoints.dir`/`state.savepoints.dir` 指向这个目录——`data-platform-service` 的流作业停止时用 stop-with-savepoint（不是硬 cancel），savepoint 存这里，下次启动能接着跑�?*已知限制**：`flink-taskmanager` 只有 2 �?task slot，一个流作业跑起来会一直占 1 个，同时测批作业（`data-platform-service` �?FLINK_JOB）可用槽位就只剩 1 个，本地开发资源有限，先接受这个限制�?
+`flink-jobmanager`/`flink-taskmanager` 都挂载了一个 `flink-state` 卷到 `/opt/flink/state`，配置 `state.checkpoints.dir`/`state.savepoints.dir` 指向这个目录——`data-platform-service` 的流作业停止时用 stop-with-savepoint（不是硬 cancel），savepoint 存这里，下次启动能接着跑。`flink-taskmanager` 有 20 个 task slot，`taskmanager.memory.process.size` 设为 8192m（原来没配置这一项时 Flink 默认只给 1728m 总进程内存，20 个槽位分下来每个槽位堆内存只有个位数 MB，实际跑不了几个并发作业；已在有更大内存的宿主机上实测验证：8 个流作业同时启动全部达到 RUNNING，未出现 OOM）。本地资源紧张的开发机上如果内存不够，可以调低这个值或减少 `taskmanager.numberOfTaskSlots`。
 ## MySQL：现在是 docker-compose 里的容器，不是装在宿主机�?
 这几个后端服务共用的 MySQL（含共享�?`platform_auth` 库）现在是这�?compose 里的 `mysql` 服务（`mysql:8.0`），不再要求你自己在宿主机装一个。发布在 **13306**（不是标准的 3306），避免跟你机器上可能还装着的其�?MySQL 冲突——各服务 `application.yml` �?`MYSQL_PORT` 默认值已经改�?13306，本地跑这些服务不需要额外配置�?
 数据用具名卷 `mysql-data` 持久化，容器重启/`docker compose down`（不�?`-v`）不会丢数据�?

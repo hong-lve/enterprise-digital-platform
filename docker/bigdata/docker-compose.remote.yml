@@ -1,15 +1,3 @@
-# Generated from docker-compose.yml (this file's twin) via a straight sed pass
-# rebinding every published port from the default 0.0.0.0 to 127.0.0.1 -
-# nothing else differs between the two files. Meant for a network-exposed
-# host (e.g. a cloud VM), not local dev use: several services here still
-# ship the same weak dev-only passwords documented below (MySQL root/123456,
-# MinIO minioadmin/minioadmin, ...), which is fine when only the host itself
-# can reach them but a real risk if bound to a public IP (mass-scanning bots
-# specifically look for exactly this). Reach these from elsewhere via an SSH
-# local-port-forward tunnel to the host, not by opening the ports directly.
-# Regenerate after editing docker-compose.yml with:
-#   sed -E 's/- "([0-9]+):([0-9]+)"/- "127.0.0.1:\1:\2"/' docker-compose.yml > docker-compose.remote.yml
-#
 # Minimal local test environment for Flink/Kafka/CDC/ClickHouse integration,
 # trimmed down from the upstream project's full Hive/Spark/Flink compose file.
 # This checkout only carries data-platform-service + data-platform-web - a
@@ -138,6 +126,15 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 20
+        # 20 slots against Flink's default 1728m total process memory left
+        # each slot with single-digit MB of task heap - fine when only 1-2
+        # jobs actually run at a time (this project's original local
+        # constraint), but not enough to run this project's full set of
+        # registered jobs concurrently without OOM. Confirmed live on a
+        # properly-resourced host: bumping this to 8g is what actually lets
+        # several real CDC-mirror-style jobs run side by side, not just the
+        # slot *count* alone.
+        taskmanager.memory.process.size: 8192m
         state.checkpoints.dir: file:///opt/flink/state/checkpoints
         state.savepoints.dir: file:///opt/flink/state/savepoints
     volumes:

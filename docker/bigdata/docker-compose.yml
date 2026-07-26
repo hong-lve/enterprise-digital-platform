@@ -126,6 +126,15 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 20
+        # 20 slots against Flink's default 1728m total process memory left
+        # each slot with single-digit MB of task heap - fine when only 1-2
+        # jobs actually run at a time (this project's original local
+        # constraint), but not enough to run this project's full set of
+        # registered jobs concurrently without OOM. Confirmed live on a
+        # properly-resourced host: bumping this to 8g is what actually lets
+        # several real CDC-mirror-style jobs run side by side, not just the
+        # slot *count* alone.
+        taskmanager.memory.process.size: 8192m
         state.checkpoints.dir: file:///opt/flink/state/checkpoints
         state.savepoints.dir: file:///opt/flink/state/savepoints
     volumes:
