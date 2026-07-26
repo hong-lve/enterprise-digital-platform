@@ -1,12 +1,16 @@
 # HA demo FlinkDeployment - 2 JobManager replicas with Kubernetes-native
-# leader election (high-availability.type: kubernetes), backed by local-path
-# PVCs rather than an external object store. kind's default StorageClass
-# (rancher.io/local-path) uses WaitForFirstConsumer binding, so whichever
-# node the first pod needing a given PVC lands on becomes that PV's home -
-# every later pod needing the *same* PVC gets scheduled there too by
-# Kubernetes itself, which is exactly what a ReadWriteOnce volume shared
-# across JobManager replicas needs. No manual node pinning required despite
-# the cluster having multiple worker nodes.
+# leader election (high-availability.type: kubernetes).
+#
+# Storage: an NFS-backed StorageClass ("nfs-client", via
+# nfs-subdir-external-provisioner pointed at an NFS export on the kind host
+# itself - see the provisioner's helm install) rather than kind's default
+# local-path StorageClass. local-path was confirmed live to strand this
+# deployment on node failure: it binds a PV to whichever single node first
+# claims it (WaitForFirstConsumer), so when that node goes down the PV goes
+# down with it and Kubernetes has nowhere else to reschedule the pods to.
+# NFS-backed storage lives outside all kind nodes, on the host, so any node
+# can mount it - this is what actually lets a FlinkDeployment survive losing
+# the node it happened to be scheduled on.
 #
 # Uses the Flink image's own bundled example job (StateMachineExample) - the
 # point of this deployment is proving the HA mechanism itself (leader
@@ -19,6 +23,7 @@ metadata:
   namespace: flink
 spec:
   accessModes: ["ReadWriteOnce"]
+  storageClassName: nfs-client
   resources:
     requests:
       storage: 1Gi
@@ -30,6 +35,7 @@ metadata:
   namespace: flink
 spec:
   accessModes: ["ReadWriteOnce"]
+  storageClassName: nfs-client
   resources:
     requests:
       storage: 2Gi
@@ -41,6 +47,7 @@ metadata:
   namespace: flink
 spec:
   accessModes: ["ReadWriteOnce"]
+  storageClassName: nfs-client
   resources:
     requests:
       storage: 2Gi
