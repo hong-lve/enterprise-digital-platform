@@ -52,7 +52,13 @@ services:
     restart: unless-stopped
     command: ["--gtid-mode=ON", "--enforce-gtid-consistency=ON"]
     environment:
-      MYSQL_ROOT_PASSWORD: "123456" # matches the app's existing MYSQL_PASSWORD default
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD} # matches the app's existing MYSQL_PASSWORD default
+      # Consumed by mysql-init/02-create-debezium-user.sh and
+      # 03-create-replication-user.sh - not by the mysql image itself, but
+      # env vars declared here are what makes them visible to those
+      # docker-entrypoint-initdb.d scripts.
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD}
+      REPL_PASSWORD: ${REPL_PASSWORD}
     ports:
       - "127.0.0.1:13306:3306"
     volumes:
@@ -60,11 +66,11 @@ services:
       # Only runs on first boot (empty data dir). data-platform-service's own
       # Flyway migrations (db/migration) create its tables and seed data
       # (the default admin account) on first startup; 03-create-replication-
-      # user.sql (see mysql-init/) creates the account mysql-replica
+      # user.sh (see mysql-init/) creates the account mysql-replica
       # authenticates as.
       - ./mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -93,14 +99,17 @@ services:
       - mysql
     command: ["--server-id=2", "--gtid-mode=ON", "--enforce-gtid-consistency=ON", "--read-only=ON", "--relay-log=relay-bin"]
     environment:
-      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      # Consumed by mysql-replica-init/01-start-replication.sh's
+      # CHANGE REPLICATION SOURCE TO ... SOURCE_PASSWORD.
+      REPL_PASSWORD: ${REPL_PASSWORD}
     ports:
       - "127.0.0.1:13307:3306" # for manual inspection only - nothing in this app reads from the replica yet
     volumes:
       - mysql-replica-data:/var/lib/mysql
       - ./mysql-replica-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -406,7 +415,7 @@ services:
     environment:
       CLICKHOUSE_DB: realtime_analytics
       CLICKHOUSE_USER: realtime
-      CLICKHOUSE_PASSWORD: realtime123
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     ports:
       - "127.0.0.1:8123:8123" # HTTP interface - the JDBC driver uses this
       - "127.0.0.1:9000:9000" # native protocol - for `clickhouse-client` manual debugging/table setup
@@ -449,9 +458,9 @@ services:
     container_name: bigdata-oracle
     restart: unless-stopped
     environment:
-      ORACLE_PASSWORD: oracle123
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
       APP_USER: realtime
-      APP_USER_PASSWORD: realtime123
+      APP_USER_PASSWORD: ${ORACLE_APP_USER_PASSWORD}
     ports:
       - "127.0.0.1:1521:1521"
     healthcheck:
@@ -474,7 +483,7 @@ services:
     image: redis:7-alpine
     container_name: bigdata-redis
     restart: unless-stopped
-    command: redis-server --requirepass redis123 --appendonly yes
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -583,11 +592,11 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "127.0.0.1:19000:9000" # S3 API (http://localhost:19000) - JarStorageService's jar-storage-endpoint
-      - "127.0.0.1:19001:9001" # web console (http://localhost:19001, login minioadmin/minioadmin)
+      - "127.0.0.1:19001:9001" # web console (http://localhost:19001) - login is MINIO_ROOT_USER/MINIO_ROOT_PASSWORD above
     volumes:
       - minio-data:/data
 

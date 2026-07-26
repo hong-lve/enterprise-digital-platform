@@ -24,6 +24,7 @@ docker/bigdata/backup/dumps/
 # Local secrets / environment overrides - never commit real credentials.
 .env
 .env.*
+!docker/bigdata/.env.example
 *.local.yml
 
 # Logs
