@@ -607,13 +607,26 @@ services:
     container_name: bigdata-prometheus
     restart: unless-stopped
     mem_limit: 200m
+    # network_mode: host (not the usual bridge network + extra_hosts
+    # host-gateway mapping) - data-platform-service moved to running purely
+    # locally while everything else here moved to a rented remote server
+    # (see docker/bigdata/README.md), which broke this scrape target:
+    # host.docker.internal now resolves to the remote host, which has
+    # nothing listening on 8085. The fix is a *reverse* SSH tunnel
+    # (-R 18085:127.0.0.1:8085, run alongside the existing forward tunnels)
+    # back from this host to the local machine - but that only ever binds
+    # to the remote host's own 127.0.0.1, not reachable from a container on
+    # the normal bridge network. Sharing the host's network namespace
+    # outright is what actually lets Prometheus reach it at 127.0.0.1:18085
+    # without needing sshd's GatewayPorts (a config change with real
+    # lock-yourself-out-of-the-server risk if it goes wrong, avoided here
+    # on purpose). Port 9090 is now bound directly on the host as a result -
+    # see prometheus.yml's data-platform-service target and README.md's
+    # updated port table.
+    network_mode: host
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
-    ports:
-      - "127.0.0.1:19090:9090" # Prometheus UI (http://localhost:19090)
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   loki:
     image: grafana/loki:2.9.8
@@ -657,6 +670,13 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "false"
     ports:
       - "127.0.0.1:13000:3000" # Grafana UI (http://localhost:13000, admin/admin on first login - or browse anonymously as Viewer)
+    # prometheus moved to network_mode: host (see that service's own
+    # comment) - it's no longer on this bridge network, so the plain
+    # service-name DNS lookup "prometheus" Grafana's datasource used to rely
+    # on stopped resolving. host.docker.internal reaches it instead now
+    # (see datasources.yml).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
