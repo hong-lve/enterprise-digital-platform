@@ -26,16 +26,24 @@ x-kafka-common-env: &kafka-common-env
   KAFKA_MIN_INSYNC_REPLICAS: 2
 
 services:
-  # ---------- MySQL ----------
+  # ---------- MySQL (primary) ----------
   # Previously assumed installed directly on the host - now containerized so
   # local dev doesn't depend on a manually-maintained host install. Published
   # on 13306, not 3306, since a real host-installed MySQL may still be
   # running on the default port; app-level defaults already point at 13306
   # (see application.yml).
+  #
+  # This was a single instance with zero replication - the single biggest
+  # remaining point of failure in this whole environment (it's both the
+  # app's own control-plane DB AND a CDC source; losing it loses both at
+  # once). GTID mode (--gtid-mode/--enforce-gtid-consistency) is on so
+  # mysql-replica below can use SOURCE_AUTO_POSITION instead of tracking
+  # binlog file+offset by hand.
   mysql:
     image: mysql:8.0
     container_name: bigdata-mysql
     restart: unless-stopped
+    command: ["--gtid-mode=ON", "--enforce-gtid-consistency=ON"]
     environment:
       MYSQL_ROOT_PASSWORD: "123456" # matches the app's existing MYSQL_PASSWORD default
     ports:
@@ -44,9 +52,46 @@ services:
       - mysql-data:/var/lib/mysql
       # Only runs on first boot (empty data dir). data-platform-service's own
       # Flyway migrations (db/migration) create its tables and seed data
-      # (the default admin account) on first startup - nothing else to
-      # restore here.
+      # (the default admin account) on first startup; 03-create-replication-
+      # user.sql (see mysql-init/) creates the account mysql-replica
+      # authenticates as.
       - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---------- MySQL (replica) ----------
+  # Plain async replication, not a cluster/Group Replication - simplest thing
+  # that gives read scaling + a promotable standby without the added
+  # operational complexity (Group Replication needs 3+ nodes and its own
+  # consensus tuning) this demo environment doesn't need. mysql-replica-init/
+  # points it at the primary using GTID auto-positioning (SOURCE_AUTO_
+  # POSITION=1) so it doesn't need a hand-tracked binlog file+offset - only
+  # works because a snapshot taken with `mysqldump --set-gtid-purged=ON` (see
+  # docker/bigdata/README.md's replication section) seeds GTID_PURGED
+  # correctly on first boot; a genuinely fresh pair (both empty) also just
+  # works since there's no gap in GTID history to bridge.
+  #
+  # --read-only (not --super-read-only) deliberately - the replication SQL
+  # thread (running as an effectively-superuser context) still needs to
+  # apply writes replayed from the primary; only ordinary client connections
+  # are blocked from writing here.
+  mysql-replica:
+    image: mysql:8.0
+    container_name: bigdata-mysql-replica
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    command: ["--server-id=2", "--gtid-mode=ON", "--enforce-gtid-consistency=ON", "--read-only=ON", "--relay-log=relay-bin"]
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+    ports:
+      - "127.0.0.1:13307:3306" # for manual inspection only - nothing in this app reads from the replica yet
+    volumes:
+      - mysql-replica-data:/var/lib/mysql
+      - ./mysql-replica-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
       interval: 5s
@@ -612,6 +657,7 @@ services:
 
 volumes:
   mysql-data:
+  mysql-replica-data:
   flink-state:
   kafka-data:
   kafka-2-data:
