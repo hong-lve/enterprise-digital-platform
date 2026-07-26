@@ -12,6 +12,19 @@
 # Host ports are deliberately remapped away from 8080/8085 and 5178, which
 # are already used by this project's own backend and frontend dev servers.
 
+x-kafka-common-env: &kafka-common-env
+  CLUSTER_ID: dfAMl01jQo2kDEJpXxMVfw
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+
 services:
   # ---------- MySQL ----------
   # Previously assumed installed directly on the host - now containerized so
@@ -188,23 +201,55 @@ services:
   # This is only for the data-platform-service CDC pipeline (Debezium ->
   # Kafka); it is intentionally not shared with data-platform-service, which
   # stays purely offline/batch (see PROJECT_SPLIT.md).
+  # ---------- Kafka: 3-broker KRaft cluster (replication factor 3) ----------
+  # Was a single broker - a hard single point of failure for the whole CDC
+  # pipeline (every Flink job's Kafka source dies the moment it goes down).
+  # All 3 share one CLUSTER_ID (generated once via `kafka-storage.sh
+  # random-uuid` - every node must agree on this to form one cluster, not
+  # three separate one-node clusters) and each other's addresses via
+  # KAFKA_CONTROLLER_QUORUM_VOTERS, and run combined broker+controller roles
+  # (simplest topology for a 3-node demo cluster; a real production
+  # deployment would more likely dedicate controller-only nodes).
+  # "kafka" keeps its existing hostname/ports so nothing that already points
+  # at it - Flink SQL job configs stored in the app's DB, Kafka Connect,
+  # Schema Registry, Kafka UI - needs to change; kafka-2/kafka-3 exist purely
+  # to host replicas and aren't referenced as a bootstrap address anywhere
+  # (Kafka clients only need one broker to bootstrap from and discover the
+  # rest of the cluster from there).
   kafka:
     image: apache/kafka:3.7.0
     container_name: bigdata-kafka
     environment:
+      <<: *kafka-common-env
       KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:9094
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:19092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
     ports:
       - "19092:9094" # host-reachable broker listener (kafka:9092 is the in-network one Kafka Connect/Kafka UI use)
+
+  kafka-2:
+    image: apache/kafka:3.7.0
+    container_name: bigdata-kafka-2
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+
+  kafka-3:
+    image: apache/kafka:3.7.0
+    container_name: bigdata-kafka-3
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092
+    volumes:
+      - kafka-3-data:/var/lib/kafka/data
 
   # ---------- Schema Registry ----------
   # Confluent's registry works against any Kafka broker over the plain
@@ -520,6 +565,9 @@ services:
 volumes:
   mysql-data:
   flink-state:
+  kafka-data:
+  kafka-2-data:
+  kafka-3-data:
   clickhouse-data:
   oracle-data:
   redis-data:
