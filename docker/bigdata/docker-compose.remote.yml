@@ -16,9 +16,56 @@ x-kafka-common-env: &kafka-common-env
   CLUSTER_ID: dfAMl01jQo2kDEJpXxMVfw
   KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka-2:9093,3@kafka-3:9093
   KAFKA_PROCESS_ROLES: broker,controller
-  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+  # SSL replaces the listener named "PLAINTEXT" - it's both the inter-broker
+  # replication listener (KAFKA_INTER_BROKER_LISTENER_NAME) AND the one every
+  # real client (Kafka Connect, Schema Registry, kafka-ui, Flink) bootstraps
+  # against via "kafka:9092" - so switching it covers "inter-broker and
+  # client traffic" in one move rather than needing two separate listeners.
+  # CONTROLLER (Raft quorum traffic between the 3 brokers) and HOST (the
+  # 127.0.0.1-only, tunnel-gated port used for ad-hoc host-side debugging -
+  # see docker-compose.remote.yml) deliberately stay PLAINTEXT: KRaft
+  # controller TLS is a separate, trickier config surface not needed to
+  # satisfy this scope, and HOST's trust boundary is already the SSH tunnel,
+  # not the wire.
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SSL:SSL,HOST:PLAINTEXT
   KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: SSL
+  # Server-side TLS only (encryption + broker authentication) - no per-
+  # client certs issued, so every client just needs the shared CA
+  # truststore.p12 + its password, not its own keystore. See kafka-tls/
+  # generate-certs.sh.
+  #
+  # PKCS12, not PEM - confirmed live that this image's own entrypoint
+  # (/etc/kafka/docker/configure) unconditionally requires a keystore
+  # password file whenever SSL is enabled, but Kafka's SSL engine then
+  # REJECTS a keystore password on a PEM-type keystore ("SSL key store
+  # password cannot be specified with PEM format, only key password may be
+  # specified") - a genuine incompatibility between the two. PKCS12
+  # legitimately has a password, sidestepping the conflict.
+  #
+  # KAFKA_SSL_CLIENT_AUTH staying "none" (not required/requested) means the
+  # entrypoint never enters its truststore-FILENAME/CREDENTIALS block, so
+  # TRUSTSTORE_LOCATION/PASSWORD can be set directly here instead - unlike
+  # the keystore, which the same entrypoint unconditionally requires as
+  # KAFKA_SSL_KEYSTORE_FILENAME (+ credential files), not a direct _LOCATION
+  # var (confirmed live - setting KAFKA_SSL_KEYSTORE_LOCATION directly
+  # crashes the container with "ensure: unbound variable" since the script
+  # never gets a chance to see it - see the per-broker
+  # KAFKA_SSL_KEYSTORE_FILENAME below instead).
+  KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+  KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
+  KAFKA_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_TLS_PASSWORD}
+  KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+  KAFKA_SSL_KEY_CREDENTIALS: creds.txt
+  KAFKA_SSL_KEYSTORE_CREDENTIALS: creds.txt
+  KAFKA_SSL_CLIENT_AUTH: none
+  # Every broker mounts its kafka-data volume at /var/lib/kafka/data, but
+  # Kafka's own default log.dirs is /tmp/kafka-logs - a plain container path
+  # the volume mount never covered. Confirmed live the hard way: topic data
+  # was silently living in that ephemeral path the whole time, so every
+  # container recreation wiped it even though the "persistent" volume looked
+  # untouched. Explicit log.dirs makes the mount actually mean something.
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
@@ -288,10 +335,14 @@ services:
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 1
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:9094
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:19092
+      KAFKA_LISTENERS: SSL://:9092,CONTROLLER://:9093,HOST://:9094
+      KAFKA_ADVERTISED_LISTENERS: SSL://kafka:9092,HOST://localhost:19092
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka.keystore.p12
     volumes:
       - kafka-data:/var/lib/kafka/data
+      - ./kafka-tls/certs/kafka.keystore.p12:/etc/kafka/secrets/kafka.keystore.p12:ro
+      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
+      - ./kafka-tls/certs/creds.txt:/etc/kafka/secrets/creds.txt:ro
     ports:
       - "127.0.0.1:19092:9094" # host-reachable broker listener (kafka:9092 is the in-network one Kafka Connect/Kafka UI use)
 
@@ -302,10 +353,14 @@ services:
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 2
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092
+      KAFKA_LISTENERS: SSL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: SSL://kafka-2:9092
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka-2.keystore.p12
     volumes:
       - kafka-2-data:/var/lib/kafka/data
+      - ./kafka-tls/certs/kafka-2.keystore.p12:/etc/kafka/secrets/kafka-2.keystore.p12:ro
+      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
+      - ./kafka-tls/certs/creds.txt:/etc/kafka/secrets/creds.txt:ro
 
   kafka-3:
     image: apache/kafka:3.7.0
@@ -314,10 +369,14 @@ services:
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 3
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092
+      KAFKA_LISTENERS: SSL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: SSL://kafka-3:9092
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka-3.keystore.p12
     volumes:
       - kafka-3-data:/var/lib/kafka/data
+      - ./kafka-tls/certs/kafka-3.keystore.p12:/etc/kafka/secrets/kafka-3.keystore.p12:ro
+      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
+      - ./kafka-tls/certs/creds.txt:/etc/kafka/secrets/creds.txt:ro
 
   # ---------- Schema Registry ----------
   # Confluent's registry works against any Kafka broker over the plain
@@ -335,8 +394,20 @@ services:
       - kafka
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      # Plain host:port, no "SSL://" scheme prefix - confirmed live that
+      # Confluent's client-side bootstrap.servers parser rejects a URI
+      # scheme here (unlike KAFKA_ADVERTISED_LISTENERS/KAFKA_LISTENERS on
+      # the broker side, which DO use scheme prefixes to name multiple
+      # listeners) - the actual protocol comes from the separate
+      # KAFKASTORE_SECURITY_PROTOCOL property below.
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: SSL
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_TYPE: PKCS12
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_TLS_PASSWORD}
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    volumes:
+      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
     ports:
       - "127.0.0.1:18081:8081" # Schema Registry REST API (http://localhost:18081) - host port 8081 already
                       # taken by data-platform-service's own default port range assumptions
@@ -362,6 +433,27 @@ services:
       CONFIG_STORAGE_TOPIC: _connect_configs
       OFFSET_STORAGE_TOPIC: _connect_offsets
       STATUS_STORAGE_TOPIC: _connect_statuses
+      # Worker-level Kafka client config (used for _connect_configs/
+      # _connect_offsets/_connect_statuses and the worker's own AdminClient)
+      # - generic CONNECT_ prefix passthrough, same mechanism the pre-
+      # existing SCHEMA_REGISTRY_URL vars below rely on. Confirmed live this
+      # is NOT inherited by each connector task's own producer - its records
+      # kept getting rejected/disconnected against the SSL-only listener
+      # until the separate producer.* block below was added explicitly.
+      # Also NOT inherited by Debezium's own internal schema-history client
+      # (see mysqldemo/oracledemo connector configs - that needs its own
+      # explicit schema.history.internal.producer/consumer overrides).
+      CONNECT_SECURITY_PROTOCOL: SSL
+      CONNECT_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      CONNECT_SSL_TRUSTSTORE_TYPE: PKCS12
+      CONNECT_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_TLS_PASSWORD}
+      # Every connector here is a source connector (Debezium) - only the
+      # task-level producer (which actually publishes CDC records) needs
+      # its own explicit override; there's no task-level consumer to match.
+      CONNECT_PRODUCER_SECURITY_PROTOCOL: SSL
+      CONNECT_PRODUCER_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      CONNECT_PRODUCER_SSL_TRUSTSTORE_TYPE: PKCS12
+      CONNECT_PRODUCER_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_TLS_PASSWORD}
       # Worker-level default converters - DebeziumConnectorConfigBuilder
       # doesn't set key.converter/value.converter per-connector, so every
       # CDC connector inherits these. KEY_CONVERTER/VALUE_CONVERTER (no
@@ -378,6 +470,8 @@ services:
       VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
       CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    volumes:
+      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
     ports:
       - "127.0.0.1:18083:8083" # Kafka Connect REST API - host port 8083 is already used by
                       # insight-screen-service's backend, so remapped like the
@@ -398,8 +492,18 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      # Arbitrary Kafka client property passthrough (KAFKA_CLUSTERS_0_
+      # PROPERTIES_* -> lowercased dotted property), same shape as Kafka
+      # Connect's CONNECT_ prefix above - kafka-ui is a client of the same
+      # SSL-only listener as everything else.
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SSL
+      KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_TYPE: PKCS12
+      KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_TLS_PASSWORD}
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+    volumes:
+      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
     ports:
       - "127.0.0.1:18090:8080" # Kafka UI (http://localhost:18090)
 

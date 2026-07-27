@@ -21,6 +21,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KAFKA_CONTAINER=bigdata-kafka
 CONNECT_CONTAINER=bigdata-kafka-connect
 KAFKA_BIN=/opt/kafka/bin/kafka-topics.sh
+# kafka:9092 (the "SSL" listener, used by every real client) needs a
+# truststore/security.protocol this admin CLI doesn't have - localhost:9094
+# is the "HOST" listener, deliberately still PLAINTEXT (see docker-
+# compose.yml's x-kafka-common-env comment) and only bound on the bigdata-
+# kafka container, so admin scripts running via `docker exec` against that
+# one specific container can use it instead.
+BOOTSTRAP=localhost:9094
 
 ARCHIVE="${1:-}"
 CONFIRM="${2:-}"
@@ -44,7 +51,7 @@ tar -C "$WORK_DIR" -xzf "$ARCHIVE"
 EXTRACTED_DIR=$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d)
 
 echo "Restoring topics from $(basename "$EXTRACTED_DIR")/topics.txt ..."
-EXISTING_TOPICS=$(docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server localhost:9092 --list)
+EXISTING_TOPICS=$(docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server "$BOOTSTRAP" --list)
 
 # Each topic's kafka-topics.sh --describe output is one summary line
 # (identifiable by its 2nd tab-separated field starting with "TopicId:")
@@ -70,7 +77,7 @@ awk -F'\t' '$2 ~ /^TopicId:/' "$EXTRACTED_DIR/topics.txt" | while IFS=$'\t' read
   fi
 
   echo "  creating $TOPIC (partitions=$PARTITIONS, replication=$REPLICATION)"
-  docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server localhost:9092 --create \
+  docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server "$BOOTSTRAP" --create \
     --topic "$TOPIC" --partitions "$PARTITIONS" --replication-factor "$REPLICATION" "${CONFIG_ARGS[@]}"
 done
 

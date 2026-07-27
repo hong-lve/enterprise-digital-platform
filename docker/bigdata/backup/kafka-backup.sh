@@ -25,6 +25,13 @@ RETENTION_COUNT=14
 KAFKA_CONTAINER=bigdata-kafka
 CONNECT_CONTAINER=bigdata-kafka-connect
 KAFKA_BIN=/opt/kafka/bin/kafka-topics.sh
+# kafka:9092 (the "SSL" listener, used by every real client) needs a
+# truststore/security.protocol this admin CLI doesn't have - localhost:9094
+# is the "HOST" listener, deliberately still PLAINTEXT (see docker-
+# compose.yml's x-kafka-common-env comment) and only bound on the bigdata-
+# kafka container, so admin scripts running via `docker exec` against that
+# one specific container can use it instead.
+BOOTSTRAP=localhost:9094
 
 mkdir -p "$DUMP_DIR"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -36,7 +43,7 @@ echo "Listing topics ..."
 # offset/status topics, Debezium's schema history, Schema Registry's own
 # topic) are excluded - Kafka and Kafka Connect recreate these themselves;
 # describing them wouldn't help a restore.
-docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server localhost:9092 --list \
+docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server "$BOOTSTRAP" --list \
   | grep -vE '^(__consumer_offsets|_connect_configs|_connect_offsets|_connect_statuses|_schemas|schema-changes\.)' \
   > "$OUT_DIR/topic-list.txt"
 
@@ -44,7 +51,7 @@ echo "Backing up topic configs to topics.txt ..."
 : > "$OUT_DIR/topics.txt"
 while read -r topic; do
   [ -z "$topic" ] && continue
-  docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server localhost:9092 --describe --topic "$topic" >> "$OUT_DIR/topics.txt"
+  docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" --bootstrap-server "$BOOTSTRAP" --describe --topic "$topic" >> "$OUT_DIR/topics.txt"
 done < "$OUT_DIR/topic-list.txt"
 rm -f "$OUT_DIR/topic-list.txt"
 

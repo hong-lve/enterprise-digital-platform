@@ -27,6 +27,10 @@ docker/bigdata/backup/dumps/
 !docker/bigdata/.env.example
 *.local.yml
 
+# Kafka TLS CA/broker private keys and certs (docker/bigdata/kafka-tls/
+# generate-certs.sh regenerates these) - never commit key material.
+docker/bigdata/kafka-tls/certs/
+
 # Logs
 *.log
 logs/
