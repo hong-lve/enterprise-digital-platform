@@ -57,6 +57,16 @@ public final class CdcMirrorSupport {
         return defaultValue;
     }
 
+    // The "kafka:9092" listener these jobs bootstrap against is SSL-only now
+    // (see docker/bigdata/docker-compose.yml's x-kafka-common-env) - there's
+    // no plaintext fallback to keep supporting, so this is unconditional
+    // rather than another --arg. Truststore is bind-mounted into the
+    // jobmanager/taskmanager containers at this fixed path (see those
+    // services' volumes:); password comes from the same KAFKA_TLS_PASSWORD
+    // env var docker-compose.yml already threads through to every other
+    // Kafka client, not a literal in source.
+    private static final String KAFKA_SSL_TRUSTSTORE_LOCATION = "/opt/flink/conf/kafka-truststore.p12";
+
     public static DataStream<Map<String, String>> sourceRows(StreamExecutionEnvironment env, String bootstrapServers, String topic, String groupId, String schemaRegistryUrl) {
         KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
             .setBootstrapServers(bootstrapServers)
@@ -64,6 +74,10 @@ public final class CdcMirrorSupport {
             .setGroupId(groupId)
             .setStartingOffsets(OffsetsInitializer.earliest())
             .setValueOnlyDeserializer(new NullSafeByteArrayDeserializer())
+            .setProperty("security.protocol", "SSL")
+            .setProperty("ssl.truststore.location", KAFKA_SSL_TRUSTSTORE_LOCATION)
+            .setProperty("ssl.truststore.type", "PKCS12")
+            .setProperty("ssl.truststore.password", System.getenv().getOrDefault("KAFKA_TLS_PASSWORD", ""))
             .build();
         return env.fromSource(source, WatermarkStrategy.noWatermarks(), "cdc-source")
             .map(new DebeziumAvroRowExtractor(topic, schemaRegistryUrl))

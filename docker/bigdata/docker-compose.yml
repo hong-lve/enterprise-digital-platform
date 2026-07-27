@@ -189,11 +189,16 @@ services:
         jobmanager.rpc.address: flink-jobmanager
         state.checkpoints.dir: file:///opt/flink/state/checkpoints
         state.savepoints.dir: file:///opt/flink/state/savepoints
+      # Read by CdcMirrorSupport.sourceRows() (flink-jobs/cdc-mirror-common) -
+      # the cdc-mirror-* JARs' own KafkaSource needs this now that kafka:9092
+      # is SSL-only, same truststore/password every other Kafka client here uses.
+      - KAFKA_TLS_PASSWORD=${KAFKA_TLS_PASSWORD}
     ports:
       - "18082:8081" # Flink web UI / REST API (http://localhost:18082)
     volumes:
       - flink-state:/opt/flink/state # checkpoint/savepoint storage for data-platform-service's
                                       # streaming jobs (stop-with-savepoint, resume-from-savepoint)
+      - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
         # single-file mount, not the whole lib/ dir - a directory mount would
         # replace the image's own lib/ contents wholesale and break every
@@ -261,8 +266,12 @@ services:
         taskmanager.memory.process.size: 8192m
         state.checkpoints.dir: file:///opt/flink/state/checkpoints
         state.savepoints.dir: file:///opt/flink/state/savepoints
+      # See flink-jobmanager's identical env var above - the actual
+      # KafkaSource operator instances run here, not on the jobmanager.
+      - KAFKA_TLS_PASSWORD=${KAFKA_TLS_PASSWORD}
     volumes:
       - flink-state:/opt/flink/state
+      - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
       - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
       - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
