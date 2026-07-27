@@ -21,14 +21,13 @@ public class RedisMirrorJob {
         String bootstrapServers = CdcMirrorSupport.arg(args, "kafka-bootstrap", "kafka:9092");
         String topic = CdcMirrorSupport.arg(args, "topic", "mysqldemo.cdc_demo.test_orders_mysql");
         String groupId = CdcMirrorSupport.arg(args, "group-id", "cdc-mirror-redis");
-        String schemaRegistryUrl = CdcMirrorSupport.arg(args, "schema-registry-url", "http://schema-registry:8081");
         String host = CdcMirrorSupport.arg(args, "sink-host", "redis");
         int port = Integer.parseInt(CdcMirrorSupport.arg(args, "sink-port", "6379"));
         String password = CdcMirrorSupport.arg(args, "sink-password", "redis123");
         String keyPrefix = CdcMirrorSupport.arg(args, "sink-key-prefix", "test_orders_mysql_redis_sink");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId, schemaRegistryUrl)
+        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId)
             .addSink(new RedisRowSink(host, port, password, keyPrefix));
         env.execute("CDC Mirror -> Redis (" + keyPrefix + ")");
     }

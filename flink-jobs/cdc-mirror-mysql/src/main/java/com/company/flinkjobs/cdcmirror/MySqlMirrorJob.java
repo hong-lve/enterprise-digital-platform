@@ -20,14 +20,13 @@ public class MySqlMirrorJob {
         String bootstrapServers = CdcMirrorSupport.arg(args, "kafka-bootstrap", "kafka:9092");
         String topic = CdcMirrorSupport.arg(args, "topic", "oracledemo.REALTIME.TEST_ORDERS_ORACLE");
         String groupId = CdcMirrorSupport.arg(args, "group-id", "cdc-mirror-mysql");
-        String schemaRegistryUrl = CdcMirrorSupport.arg(args, "schema-registry-url", "http://schema-registry:8081");
         String url = CdcMirrorSupport.arg(args, "sink-url", "jdbc:mysql://mysql:3306/cdc_demo");
         String user = CdcMirrorSupport.arg(args, "sink-user", "root");
         String password = CdcMirrorSupport.arg(args, "sink-password", "123456");
         String table = CdcMirrorSupport.arg(args, "sink-table", "test_orders_oracle_mysql_sink");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId, schemaRegistryUrl)
+        CdcMirrorSupport.sourceRows(env, bootstrapServers, topic, groupId)
             .addSink(new MySqlRowSink(url, user, password, table));
         env.execute("CDC Mirror -> MySQL (" + table + ")");
     }
