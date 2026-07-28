@@ -43,9 +43,17 @@ public class RedisConnectionService {
         this.dataSourceMapper = dataSourceMapper;
     }
 
+    // Jedis's no-arg-timeout constructor defaults to a 2s socket timeout -
+    // fine for a single command, but countKeysMatching() below can need
+    // hundreds of SCAN round-trips on a large keyspace, and any one of them
+    // running long (e.g. over an SSH-tunneled connection) aborts the whole
+    // count. 30s gives that loop room to breathe without waiting forever on
+    // a genuinely dead connection.
+    private static final int SOCKET_TIMEOUT_MILLIS = 30_000;
+
     private Jedis openConnection(DataSourceEntity dataSource, String database) {
         try {
-            Jedis jedis = new Jedis(dataSource.getHost(), dataSource.getPort());
+            Jedis jedis = new Jedis(dataSource.getHost(), dataSource.getPort(), SOCKET_TIMEOUT_MILLIS);
             jedis.auth(dataSource.getUsername(), dataSource.getPassword());
             if (database != null && !database.isBlank()) {
                 jedis.select(Integer.parseInt(database));
@@ -96,12 +104,19 @@ public class RedisConnectionService {
      * `limit` and stops early for the "Key 浏览" UI preview, which would
      * silently undercount a reconciliation check on any keyspace bigger
      * than the cap.
+     *
+     * COUNT is set high (not Redis's default ~10) because each cursor call
+     * is a full network round-trip - confirmed live that a 550k-key scan
+     * over an SSH-tunneled connection (~220ms RTT) needs ~550 round-trips
+     * at COUNT=1000, which alone exceeds two minutes before Redis or Jedis
+     * do any real work. A larger COUNT trades a bit more per-call payload
+     * for an order-of-magnitude fewer round-trips.
      */
     public long countKeysMatching(DataSourceEntity dataSource, String database, String pattern) {
         try (Jedis jedis = openConnection(dataSource, database)) {
             long count = 0;
             String cursor = "0";
-            ScanParams params = new ScanParams().match(pattern == null || pattern.isBlank() ? "*" : pattern).count(1000);
+            ScanParams params = new ScanParams().match(pattern == null || pattern.isBlank() ? "*" : pattern).count(20_000);
             do {
                 ScanResult<String> result = jedis.scan(cursor, params);
                 count += result.getResult().size();

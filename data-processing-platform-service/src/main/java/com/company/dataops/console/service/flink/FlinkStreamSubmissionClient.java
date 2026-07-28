@@ -13,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -153,6 +154,16 @@ public class FlinkStreamSubmissionClient {
         Map<?, ?> result;
         try {
             result = restTemplate.getForObject(baseUrl + "/v1/jobs/" + flinkJobId, Map.class);
+        } catch (HttpClientErrorException.NotFound notFound) {
+            // Flink itself responded and definitively said this job id doesn't
+            // exist - not a transient call failure, so don't fall back to
+            // "RUNNING, retry later" like the catch-all below. That fallback
+            // exists for actual transient errors (connection refused, Flink
+            // briefly unreachable), but a 404 here never resolves itself on
+            // retry - it means Flink's job state was wiped (e.g. a full
+            // flink-jobmanager restart), and every subsequent poll would 404
+            // forever, leaving the DB stuck showing "RUNNING" indefinitely.
+            return new FlinkJobStatus("FAILED", "作业在 Flink 侧已不存在（Flink 可能已重启，作业状态丢失）");
         } catch (Exception exception) {
             return new FlinkJobStatus("RUNNING", "查询状态失败，稍后重试：" + exception.getMessage());
         }

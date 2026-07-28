@@ -1,6 +1,7 @@
 package com.company.dataops.console.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.service.flink.FlinkBackpressureInspector;
@@ -83,7 +84,21 @@ public class FlinkStreamJobPollingScheduler {
                     job.setAlertState("ALERTING");
                 }
                 flinkBackpressureInspector.forget(job.getFlinkJobId());
-                flinkStreamJobMapper.updateById(job);
+                // Targeted update, not updateById(job) - job is a snapshot from
+                // this method's own selectList() at the top of this poll tick.
+                // If /start (FlinkStreamJobController) resubmits this job and
+                // writes a fresh flinkJobId in between that select and this
+                // write, updateById() would blast every column from this stale
+                // snapshot back over the row - including the now-outdated
+                // flinkJobId - silently undoing the resubmission. Confirmed
+                // live: this is exactly what caused the app's own job list to
+                // show a dead flinkJobId for a job that was actually running
+                // fine under a newer one.
+                flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                    .eq(FlinkStreamJobEntity::getId, job.getId())
+                    .set(FlinkStreamJobEntity::getStatus, job.getStatus())
+                    .set(FlinkStreamJobEntity::getLastError, job.getLastError())
+                    .set(FlinkStreamJobEntity::getAlertState, job.getAlertState()));
                 continue; // not healthy right now - backpressure isn't a meaningful question
             }
             checkBackpressure(job);
@@ -114,7 +129,13 @@ public class FlinkStreamJobPollingScheduler {
             );
             job.setBackpressureAlertState("OK");
         }
-        flinkStreamJobMapper.updateById(job);
+        // Targeted update - see pollRunningJobs()'s identical comment on why
+        // updateById(job) here would risk clobbering a concurrent /start's
+        // fresh flinkJobId with this method's own stale snapshot.
+        flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+            .eq(FlinkStreamJobEntity::getId, job.getId())
+            .set(FlinkStreamJobEntity::getBackpressureRatio, job.getBackpressureRatio())
+            .set(FlinkStreamJobEntity::getBackpressureAlertState, job.getBackpressureAlertState()));
     }
 
     private void checkConsumerLag(FlinkStreamJobEntity job) {
@@ -145,6 +166,10 @@ public class FlinkStreamJobPollingScheduler {
             );
             job.setConsumerLagAlertState("OK");
         }
-        flinkStreamJobMapper.updateById(job);
+        // Targeted update - see pollRunningJobs()'s identical comment.
+        flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+            .eq(FlinkStreamJobEntity::getId, job.getId())
+            .set(FlinkStreamJobEntity::getConsumerLagRecords, job.getConsumerLagRecords())
+            .set(FlinkStreamJobEntity::getConsumerLagAlertState, job.getConsumerLagAlertState()));
     }
 }

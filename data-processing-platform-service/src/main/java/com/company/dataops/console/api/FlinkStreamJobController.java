@@ -207,7 +207,15 @@ public class FlinkStreamJobController {
         String savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
         job.setStatus("CANCELED");
         job.setSavepointPath(savepointPath);
-        flinkStreamJobMapper.updateById(job);
+        // Targeted update, not updateById(job) - stopWithSavepoint() is a slow
+        // network call, so job is a stale snapshot from requireJob() by the
+        // time we write. Same lost-update risk as start()/the poller: a
+        // blanket write here could stomp a concurrent start()'s fresh
+        // flinkJobId or the poller's alert/backpressure/lag fields.
+        flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+            .eq(FlinkStreamJobEntity::getId, job.getId())
+            .set(FlinkStreamJobEntity::getStatus, job.getStatus())
+            .set(FlinkStreamJobEntity::getSavepointPath, job.getSavepointPath()));
     }
 
     // Separate from update()'s existing savepointPath=null clear (which only
@@ -245,7 +253,13 @@ public class FlinkStreamJobController {
         FlinkStreamSubmissionClient.FlinkJobStatus status = flinkStreamSubmissionClient.status(job.getFlinkJobId());
         job.setStatus(status.state());
         job.setLastError(status.message());
-        flinkStreamJobMapper.updateById(job);
+        // Targeted update - same stale-snapshot race as applyStop(): the
+        // status() call above is a network round-trip, so a full updateById()
+        // here could clobber a concurrent start()'s or the poller's writes.
+        flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+            .eq(FlinkStreamJobEntity::getId, job.getId())
+            .set(FlinkStreamJobEntity::getStatus, job.getStatus())
+            .set(FlinkStreamJobEntity::getLastError, job.getLastError()));
         return ApiResponse.ok(job);
     }
 

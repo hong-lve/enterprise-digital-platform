@@ -304,9 +304,16 @@ services:
       -Dexecution.target=remote
       -Drest.address=flink-jobmanager
       -Drest.port=8081"
+    environment:
+      # kafka:9092 is SSL-only - the jobmanager already has this (see its own
+      # comment), but the SQL Gateway path never got the equivalent fix when
+      # Kafka went SSL-only, which is why every SQL job whose source table
+      # is a Kafka connector fails at runtime with an SSL handshake error.
+      - KAFKA_TLS_PASSWORD=${KAFKA_TLS_PASSWORD}
     ports:
       - "127.0.0.1:18084:8083" # SQL Gateway REST API (http://localhost:18084)
     volumes:
+      - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
       - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
         # SQL Gateway compiles/validates DDL on its own classpath before
@@ -639,8 +646,22 @@ services:
     container_name: bigdata-doris
     profiles: ["doris"]
     restart: unless-stopped
+    # RECOVERY=true stays on for now - confirmed live that removing it makes
+    # this specific doris-meta volume's FE refuse to start at all ("Missing
+    # required parameters", crash loop) rather than just affecting self-
+    # registration - the existing metadata apparently still needs adoption
+    # mode every boot, not just the one migration boot that originally added
+    # this (see the "retiring the RC11 all-in-one image" history). Long-term
+    # this should still come off (upstream explicitly warns permanent
+    # metadata_failure_recovery can cause metadata truncation/loss/split-
+    # brain) but that needs a real metadata-freshening step first, not just
+    # deleting the env var - tracked separately, not blocking the static-IP
+    # fix here.
     environment:
       RECOVERY: "true"
+    networks:
+      default:
+        ipv4_address: 172.18.0.240
     ports:
       - "127.0.0.1:8030:8030" # FE HTTP - Stream Load endpoint (what the sink writes through) + web UI
       - "127.0.0.1:9030:9030" # FE MySQL protocol - `mysql -h127.0.0.1 -P9030 -uroot` for manual table setup/debugging
@@ -654,7 +675,13 @@ services:
   # All three use the official standalone be-2.1.11 image in its "assign
   # mode" to join the FE as backends - see doris-be-entrypoint-wrapper.sh for
   # why that needs a small wrapper (assign mode's FE_MASTER_IP must be a
-  # literal IP; this compose file has no static IPs to hardcode one).
+  # literal IP; resolved dynamically via DNS at each startup rather than
+  # hardcoded, since these BEs re-register with ALTER SYSTEM ADD BACKEND
+  # every restart regardless). Static IPs below are so that re-registration
+  # dance stops being necessary at all - once each BE's address stops
+  # changing, its ADD BACKEND registration just keeps matching reality
+  # across restarts instead of going stale like the FE's self-registration
+  # did.
   doris-be1:
     image: apache/doris:be-2.1.11
     container_name: bigdata-doris-be1
@@ -663,6 +690,9 @@ services:
     depends_on:
       - doris
     entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
+    networks:
+      default:
+        ipv4_address: 172.18.0.241
     volumes:
       - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
       - doris-be1-storage:/opt/apache-doris/be/storage
@@ -675,6 +705,9 @@ services:
     depends_on:
       - doris
     entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
+    networks:
+      default:
+        ipv4_address: 172.18.0.242
     volumes:
       - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
       - doris-be2-storage:/opt/apache-doris/be/storage
@@ -687,6 +720,9 @@ services:
     depends_on:
       - doris
     entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
+    networks:
+      default:
+        ipv4_address: 172.18.0.243
     volumes:
       - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
       - doris-be3-storage:/opt/apache-doris/be/storage
@@ -838,3 +874,17 @@ volumes:
   loki-data:
   grafana-data:
   tempo-data:
+
+# Named "default" (not "bigdata_default") deliberately - this is the exact
+# network Compose would create implicitly anyway (named "<project>_default";
+# the project name here is "bigdata"), just with an explicit subnet so the 4
+# Doris services above can request a static ipv4_address on it. Every other
+# service still attaches to it implicitly with no networks: key of its own,
+# same as before this block existed - only services opting into a static
+# address need to say so explicitly.
+networks:
+  default:
+    name: bigdata_default
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16

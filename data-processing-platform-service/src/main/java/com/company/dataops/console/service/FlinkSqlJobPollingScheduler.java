@@ -1,6 +1,7 @@
 package com.company.dataops.console.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.FlinkSqlJobEntity;
 import com.company.dataops.console.mapper.FlinkSqlJobMapper;
 import com.company.dataops.console.service.flink.FlinkBackpressureInspector;
@@ -76,7 +77,16 @@ public class FlinkSqlJobPollingScheduler {
                     job.setAlertState("ALERTING");
                 }
                 flinkBackpressureInspector.forget(job.getFlinkJobId());
-                flinkSqlJobMapper.updateById(job);
+                // Targeted update, not updateById(job) - see
+                // FlinkStreamJobPollingScheduler's identical comment: job is a
+                // stale snapshot from this tick's own selectList(), and
+                // updateById() would blast every column (including a
+                // now-outdated flinkJobId) over whatever /start just wrote.
+                flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+                    .eq(FlinkSqlJobEntity::getId, job.getId())
+                    .set(FlinkSqlJobEntity::getStatus, job.getStatus())
+                    .set(FlinkSqlJobEntity::getLastError, job.getLastError())
+                    .set(FlinkSqlJobEntity::getAlertState, job.getAlertState()));
                 continue; // not healthy right now - backpressure isn't a meaningful question
             }
             checkBackpressure(job);
@@ -107,7 +117,11 @@ public class FlinkSqlJobPollingScheduler {
             );
             job.setBackpressureAlertState("OK");
         }
-        flinkSqlJobMapper.updateById(job);
+        // Targeted update - see pollRunningJobs()'s identical comment.
+        flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+            .eq(FlinkSqlJobEntity::getId, job.getId())
+            .set(FlinkSqlJobEntity::getBackpressureRatio, job.getBackpressureRatio())
+            .set(FlinkSqlJobEntity::getBackpressureAlertState, job.getBackpressureAlertState()));
     }
 
     private void checkConsumerLag(FlinkSqlJobEntity job) {
@@ -138,6 +152,10 @@ public class FlinkSqlJobPollingScheduler {
             );
             job.setConsumerLagAlertState("OK");
         }
-        flinkSqlJobMapper.updateById(job);
+        // Targeted update - see pollRunningJobs()'s identical comment.
+        flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+            .eq(FlinkSqlJobEntity::getId, job.getId())
+            .set(FlinkSqlJobEntity::getConsumerLagRecords, job.getConsumerLagRecords())
+            .set(FlinkSqlJobEntity::getConsumerLagAlertState, job.getConsumerLagAlertState()));
     }
 }
