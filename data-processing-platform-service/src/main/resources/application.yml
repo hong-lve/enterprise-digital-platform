@@ -1,0 +1,194 @@
+﻿server:
+  port: 8085
+  servlet:
+    context-path: /api
+    session:
+      cookie:
+        name: DATA_PLATFORM_WEB_SESSION
+        path: /
+
+spring:
+  application:
+    name: data-processing-platform-service
+  task:
+    scheduling:
+      # Spring Boot's default is a single-thread pool for every @Scheduled
+      # bean in the app - CdcSourceStatusScheduler/FlinkStreamJobPollingScheduler/
+      # DataReconciliationScheduler/FlinkSqlJobPollingScheduler/
+      # AlertHistoryRetentionScheduler/ContainerMonitoringScheduler all share
+      # it. Each of those makes plain `new RestTemplate()` calls with no
+      # configured timeout, so a single slow/hung remote call (SSH-tunneled
+      # Kafka Connect, Flink REST, Docker API - all things this session has
+      # seen go flaky) can starve every other scheduled task indefinitely.
+      # Confirmed live: ContainerMonitoringScheduler's poll() never ran a
+      # single time with pool size 1, even minutes after startup.
+      pool:
+        size: 8
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  datasource:
+    # allowPublicKeyRetrieval - confirmed live it's required against a
+    # fresh official mysql:8.0 image (K8s Helm chart's mysql component),
+    # which defaults to caching_sha2_password: without it the driver
+    # refuses to fetch the server's RSA public key over an unencrypted
+    # connection and every connection attempt fails outright. Harmless
+    # no-op against a server that doesn't need it (e.g. local dev MySQL
+    # installs already using mysql_native_password).
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:13306}/data_platform_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    validate-on-migrate: false
+    encoding: UTF-8
+  # Backs LoginRateLimiter/TwoFactorPendingLoginStore - shared state instead
+  # of an in-process ConcurrentHashMap, so more than one instance of this
+  # service (behind a load balancer) sees the same rate-limit counters and
+  # pending-2FA logins instead of each holding its own, inconsistent copy.
+  # Same bigdata-redis instance the Flink sink jobs already use (host-facing
+  # address, since this JVM runs on the host, not in Docker) - distinct key
+  # prefixes (ratelimit:*, 2fa-pending:*) keep this from ever colliding with
+  # a sink job's own keys in the same instance.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis123}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+# Writes to a stable path (not just console output) so Promtail
+# (docker/bigdata/observability, bind-mounts ../../data-processing-platform-service/logs)
+# can tail it - this process runs directly on the host, not in a container
+# Promtail could otherwise reach via Docker service discovery the way it
+# does for the other bigdata-* containers' logs. Relative to this module's
+# own working directory (confirmed live: `java -jar target/...` from
+# data-processing-platform-service/ - the convention this whole project already runs
+# it with - lands this at data-processing-platform-service/logs/, not the repo root).
+logging:
+  file:
+    name: ${LOG_FILE:./logs/data-processing-platform-service.log}
+
+platform:
+  # Local-dev-only default - any real deployment must override this via the
+  # DATASOURCE_ENCRYPTION_KEY env var with its own generated value (32 random
+  # bytes, base64-encoded) and keep it out of source control. Rotating it
+  # makes every already-encrypted data_source.password unreadable, since
+  # DataSourceCredentialCrypto has no key-versioning/rotation support.
+  datasource-encryption-key: ${DATASOURCE_ENCRYPTION_KEY:4kgMbfQgG6JfGtVCnxOJ+SMq9UJyCS4epfkthbMaiQw=}
+  web:
+    frontend-url: ${FRONTEND_URL:http://localhost:5178}
+  bigdata:
+    jar-storage-endpoint: ${JAR_STORAGE_ENDPOINT:http://localhost:19000}
+    jar-storage-region: ${JAR_STORAGE_REGION:us-east-1}
+    jar-storage-bucket: ${JAR_STORAGE_BUCKET:flink-jars}
+    jar-storage-access-key: ${JAR_STORAGE_ACCESS_KEY:minioadmin}
+    jar-storage-secret-key: ${JAR_STORAGE_SECRET_KEY:minioadmin}
+    kafka-connect-url: ${KAFKA_CONNECT_URL:http://localhost:18083}
+    kafka-bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    # Same broker, different address depending on who's connecting - this
+    # service's own JVM reaches Kafka via the HOST listener (localhost:19092,
+    # above), but Kafka Connect and Flink both run inside Docker and need the
+    # PLAINTEXT listener's docker-network address instead. Needed wherever a
+    # bootstrap-servers value ends up embedded in config that Kafka Connect
+    # or Flink executes on their own, not this JVM: DebeziumConnectorConfigBuilder's
+    # schema.history.internal.kafka.bootstrap.servers, and CdcTableSchemaService's
+    # generated 'properties.bootstrap.servers' Flink SQL DDL.
+    kafka-bootstrap-servers-internal: ${KAFKA_BOOTSTRAP_SERVERS_INTERNAL:kafka:9092}
+    # Same internal-vs-host split as kafka-bootstrap-servers above, now that
+    # Kafka Connect's converters emit Avro via Confluent Schema Registry
+    # (docker/bigdata/kafka-connect) instead of plain JSON. This JVM
+    # (CdcLagInspector, CdcTableSchemaService) reaches it via the host-mapped
+    # port; Flink SQL DDL embeds the docker-network address instead, same
+    # reasoning as kafka-bootstrap-servers-internal.
+    schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:18081}
+    schema-registry-url-internal: ${SCHEMA_REGISTRY_URL_INTERNAL:http://schema-registry:8081}
+    cdc-recovery-max-attempts: ${CDC_RECOVERY_MAX_ATTEMPTS:3}
+    cdc-recovery-delay-seconds: ${CDC_RECOVERY_DELAY_SECONDS:60}
+    flink-rest-url: ${FLINK_REST_URL:http://localhost:18082}
+    flink-backpressure-alert-threshold: ${FLINK_BACKPRESSURE_ALERT_THRESHOLD:0.5}
+    flink-consumer-lag-alert-threshold: ${FLINK_CONSUMER_LAG_ALERT_THRESHOLD:500}
+    alert-webhook-url: ${ALERT_WEBHOOK_URL:}
+    flink-sql-gateway-url: ${FLINK_SQL_GATEWAY_URL:http://localhost:18084}
+    clickhouse-jdbc-url: ${CLICKHOUSE_JDBC_URL:jdbc:clickhouse://localhost:8123/realtime_analytics}
+    clickhouse-username: ${CLICKHOUSE_USERNAME:realtime}
+    clickhouse-password: ${CLICKHOUSE_PASSWORD:realtime123}
+    clickhouse-database: ${CLICKHOUSE_DATABASE:realtime_analytics}
+    alert-history-retention-days: ${ALERT_HISTORY_RETENTION_DAYS:30}
+    doris-jdbc-url: ${DORIS_JDBC_URL:jdbc:mysql://localhost:9030/realtime_demo}
+    doris-username: ${DORIS_USERNAME:root}
+    doris-password: ${DORIS_PASSWORD:}
+    doris-database: ${DORIS_DATABASE:realtime_demo}
+    # Docker Engine API, reached over the same SSH tunnel as everything else
+    # in this section - bound to 127.0.0.1 only on the remote host (see
+    # docker/bigdata/README.md's tunnel notes), never exposed on a public
+    # interface. Read-only GET calls only (ContainerMonitoringPoller).
+    docker-api-url: ${DOCKER_API_URL:http://localhost:2375}
+    docker-node-name: ${DOCKER_NODE_NAME:vultr-bigdata-server}
+    # JAR 包管理's "在线编写" flow (JavaJobBuildService). Per-target-type
+    # base jars (sink-jar-*) are the SAME already-built cdc-mirror-*
+    # module outputs the "拆开不同 jar 包" work produced - reusing them here
+    # means a user's online-compiled ClickHouse job gets exactly
+    # cdc-mirror-clickhouse's dependency footprint (~25MB), not a
+    # kitchen-sink jar bundling every driver whether used or not
+    # (previously always ~38MB regardless of target, confirmed live).
+    # buildkit-jar-path (all five drivers merged, no Main-Class) still backs
+    # the "全部" fallback option for a job that genuinely needs more than
+    # one driver. Local-dev-only paths (this whole platform runs directly
+    # on this dev machine, not containerized) - a real deployment would
+    # need these pointed at wherever its own build produced them.
+    java-build:
+      buildkit-jar-path: ${JAVA_BUILD_BUILDKIT_JAR:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-buildkit/target/cdc-mirror-buildkit.jar}
+      sink-jar-clickhouse: ${JAVA_BUILD_SINK_JAR_CLICKHOUSE:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-clickhouse/target/cdc-mirror-clickhouse.jar}
+      sink-jar-oracle: ${JAVA_BUILD_SINK_JAR_ORACLE:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-oracle/target/cdc-mirror-oracle.jar}
+      sink-jar-mysql: ${JAVA_BUILD_SINK_JAR_MYSQL:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-mysql/target/cdc-mirror-mysql.jar}
+      sink-jar-redis: ${JAVA_BUILD_SINK_JAR_REDIS:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-redis/target/cdc-mirror-redis.jar}
+      sink-jar-doris: ${JAVA_BUILD_SINK_JAR_DORIS:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-doris/target/cdc-mirror-doris.jar}
+      # Minimal classpath actually needed for javac to resolve everything a
+      # cdc-mirror-* style job imports (StreamExecutionEnvironment,
+      # RichSinkFunction, Configuration, DataStream, etc.) - confirmed live
+      # by testing progressively smaller sets: flink-streaming-java +
+      # flink-clients alone aren't enough (fail on Configuration/Function,
+      # both living in the transitive flink-core dependency neither embeds);
+      # these 3 extra jars are what actually closes that gap. This used to
+      # be the full ~70-entry `mvn dependency:build-classpath
+      # -Dmdep.includeScope=provided` dump (every Kafka/HTTP/Guava/etc.
+      # transitive jar, most of it never actually needed for compiling
+      # *user* code against CdcMirrorSupport's public surface) - shrunk
+      # down to what's empirically sufficient instead of what one dependency
+      # tree happened to contain, so a Flink version bump means re-verifying
+      # 5 jars, not silently trusting a 70-line copy-paste.
+      compile-only-jars: ${JAVA_BUILD_COMPILE_ONLY_JARS:D:/workspace/application/apache-maven-3.9.9/mvnLocalRepository/org/apache/flink/flink-streaming-java/1.19.3/flink-streaming-java-1.19.3.jar,D:/workspace/application/apache-maven-3.9.9/mvnLocalRepository/org/apache/flink/flink-clients/1.19.3/flink-clients-1.19.3.jar,D:/workspace/application/apache-maven-3.9.9/mvnLocalRepository/org/apache/flink/flink-core/1.19.3/flink-core-1.19.3.jar,D:/workspace/application/apache-maven-3.9.9/mvnLocalRepository/org/apache/flink/flink-annotations/1.19.3/flink-annotations-1.19.3.jar,D:/workspace/application/apache-maven-3.9.9/mvnLocalRepository/org/apache/flink/flink-metrics-core/1.19.3/flink-metrics-core-1.19.3.jar}
+      # "调试运行" (JavaJobBuildService.debugRun) launches a bare `java -cp`
+      # subprocess with no Flink cluster underneath it - unlike a real
+      # cluster submission, there's no lib/ folder supplying the classes a
+      # normal Flink deployment always has present. Confirmed live: without
+      # this, every debug run fails with NoClassDefFoundError on
+      # RecordEmitter (an internal KafkaSource class) even after compiling
+      # cleanly, since compilation never needed to resolve it directly.
+      # flink-dist bundles flink-core/flink-runtime/etc. together the same
+      # way the real cluster's own lib/flink-dist-*.jar does - copied
+      # straight out of the running bigdata-flink-jobmanager container
+      # (`docker cp .../opt/flink/lib/flink-dist-1.19.3.jar`) rather than
+      # resolved from Maven, since flink-dist isn't meant to be depended on
+      # as a regular library artifact.
+      debug-run-extra-jars: ${JAVA_BUILD_DEBUG_RUN_EXTRA_JARS:D:/workspace/application/apache-maven-3.9.9/mvnLocalRepository/flink-dist-1.19.3.jar}
