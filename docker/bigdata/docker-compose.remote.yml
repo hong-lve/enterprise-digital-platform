@@ -1,8 +1,8 @@
-# Minimal local test environment for Flink/Kafka/CDC/ClickHouse integration,
+﻿# Minimal local test environment for Flink/Kafka/CDC/ClickHouse integration,
 # trimmed down from the upstream project's full Hive/Spark/Flink compose file.
-# This checkout only carries data-platform-service + data-platform-web - a
+# This checkout only carries data-processing-platform-service + data-processing-platform-web - a
 # standalone app with its own local auth tables (see
-# data-platform-service/src/main/resources/db/migration) and no external
+# data-processing-platform-service/src/main/resources/db/migration) and no external
 # identity provider. Hive and Spark (hive-metastore, hive-server2,
 # spark-master, spark-worker) were removed here since neither one is
 # referenced anywhere in this app's code. Keycloak was removed too - this
@@ -110,7 +110,7 @@ services:
       - "127.0.0.1:13306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      # Only runs on first boot (empty data dir). data-platform-service's own
+      # Only runs on first boot (empty data dir). data-processing-platform-service's own
       # Flyway migrations (db/migration) create its tables and seed data
       # (the default admin account) on first startup; 03-create-replication-
       # user.sh (see mysql-init/) creates the account mysql-replica
@@ -196,7 +196,7 @@ services:
     ports:
       - "127.0.0.1:18082:8081" # Flink web UI / REST API (http://localhost:18082)
     volumes:
-      - flink-state:/opt/flink/state # checkpoint/savepoint storage for data-platform-service's
+      - flink-state:/opt/flink/state # checkpoint/savepoint storage for data-processing-platform-service's
                                       # streaming jobs (stop-with-savepoint, resume-from-savepoint)
       - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
@@ -319,8 +319,8 @@ services:
       - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
 
   # ---------- Kafka (KRaft mode, single node, no separate Zookeeper) ----------
-  # This is only for the data-platform-service CDC pipeline (Debezium ->
-  # Kafka); it is intentionally not shared with data-platform-service, which
+  # This is only for the data-processing-platform-service CDC pipeline (Debezium ->
+  # Kafka); it is intentionally not shared with data-processing-platform-service, which
   # stays purely offline/batch (see PROJECT_SPLIT.md).
   # ---------- Kafka: 3-broker KRaft cluster (replication factor 3) ----------
   # Was a single broker - a hard single point of failure for the whole CDC
@@ -419,7 +419,7 @@ services:
       - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
     ports:
       - "127.0.0.1:18081:8081" # Schema Registry REST API (http://localhost:18081) - host port 8081 already
-                      # taken by data-platform-service's own default port range assumptions
+                      # taken by data-processing-platform-service's own default port range assumptions
 
   # ---------- Kafka Connect (Debezium) ----------
   # Custom image (docker/bigdata/kafka-connect/Dockerfile), not the stock
@@ -517,7 +517,7 @@ services:
       - "127.0.0.1:18090:8080" # Kafka UI (http://localhost:18090)
 
   # ---------- ClickHouse (real-time storage layer) ----------
-  # Single node, no cluster/replication - data-platform-service's
+  # Single node, no cluster/replication - data-processing-platform-service's
   # RealtimeQueryController queries this to verify data landing from Flink
   # jobs the user submits (this repo doesn't write the Flink->ClickHouse
   # sink code itself, see docker/bigdata/README.md).
@@ -692,7 +692,7 @@ services:
       - doris-be3-storage:/opt/apache-doris/be/storage
 
   # ---------- MinIO (S3-compatible object storage) ----------
-  # Backs data-platform-service's JarStorageService (uploaded Flink job
+  # Backs data-processing-platform-service's JarStorageService (uploaded Flink job
   # JARs) - a real object store instead of the service's local disk, same
   # "wire up a real instance" approach as the Oracle/Redis services above.
   # Console (9001) is the web UI; API (9000) is what JarStorageService's
@@ -714,11 +714,11 @@ services:
       - minio-data:/data
 
   # ---------- Observability: Prometheus + Grafana + Loki/Promtail ----------
-  # Turns the metrics data-platform-service already exposes at
+  # Turns the metrics data-processing-platform-service already exposes at
   # /actuator/prometheus (management.endpoints.web.exposure.include) into an
   # actual scraped-and-graphed signal, plus centralizes every bigdata-*
   # container's logs (Promtail's Docker service discovery, via the bind-
-  # mounted socket) alongside data-platform-service's own log file (that
+  # mounted socket) alongside data-processing-platform-service's own log file (that
   # process runs on the host, not as a container Promtail could otherwise
   # see - see application.yml's logging.file.name and the bind mount below).
   # mem_limit on all four - this whole stack runs on a resource-constrained
@@ -730,7 +730,7 @@ services:
     restart: unless-stopped
     mem_limit: 200m
     # network_mode: host (not the usual bridge network + extra_hosts
-    # host-gateway mapping) - data-platform-service moved to running purely
+    # host-gateway mapping) - data-processing-platform-service moved to running purely
     # locally while everything else here moved to a rented remote server
     # (see docker/bigdata/README.md), which broke this scrape target:
     # host.docker.internal now resolves to the remote host, which has
@@ -743,7 +743,7 @@ services:
     # without needing sshd's GatewayPorts (a config change with real
     # lock-yourself-out-of-the-server risk if it goes wrong, avoided here
     # on purpose). Port 9090 is now bound directly on the host as a result -
-    # see prometheus.yml's data-platform-service target and README.md's
+    # see prometheus.yml's data-processing-platform-service target and README.md's
     # updated port table.
     network_mode: host
     volumes:
@@ -760,6 +760,20 @@ services:
       - ./observability/loki.yml:/etc/loki/local-config.yaml:ro
       - loki-data:/loki
 
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: bigdata-tempo
+    restart: unless-stopped
+    mem_limit: 250m
+    command: -config.file=/etc/tempo/config.yml
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13200:3200"
+    volumes:
+      - ./observability/tempo.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+
   promtail:
     image: grafana/promtail:2.9.8
     container_name: bigdata-promtail
@@ -771,7 +785,7 @@ services:
     volumes:
       - ./observability/promtail.yml:/etc/promtail/config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ../../data-platform-service/logs:/var/log/data-platform-service:ro
+      - ../../data-processing-platform-service/logs:/var/log/data-processing-platform-service:ro
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -781,6 +795,7 @@ services:
     depends_on:
       - prometheus
       - loki
+      - tempo
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
@@ -822,3 +837,4 @@ volumes:
   prometheus-data:
   loki-data:
   grafana-data:
+  tempo-data:

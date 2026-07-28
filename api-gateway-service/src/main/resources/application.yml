@@ -1,0 +1,34 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: api-gateway-service
+  cloud:
+    gateway:
+      default-filters:
+        - AddResponseHeader=X-Gateway-Service, api-gateway-service
+      routes:
+        - id: data-service-openapi
+          uri: ${DATA_SERVICE_URL:http://localhost:8087}
+          predicates:
+            - Path=/openapi/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,gateway
+  endpoint:
+    health:
+      probes:
+        enabled: true
+    gateway:
+      enabled: true
+
+platform:
+  gateway:
+    timestamp-skew: 5m
+    # The gateway rejects incomplete/stale requests cheaply. The data-service
+    # runtime performs authoritative HMAC, nonce, authorization and QPS checks.
+    require-signature: true

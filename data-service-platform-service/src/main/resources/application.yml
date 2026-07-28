@@ -1,0 +1,95 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: data-service-platform
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:13306}/data_service_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    encoding: UTF-8
+  jdbc:
+    template:
+      query-timeout: ${DATA_SERVICE_QUERY_TIMEOUT_SECONDS:10}
+      max-rows: ${DATA_SERVICE_MAX_PAGE_SIZE:500}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis123}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
+      timeout: ${REDIS_COMMAND_TIMEOUT:1s}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${OTEL_TRACES_SAMPLER_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://127.0.0.1:4318/v1/traces}
+      timeout: ${OTEL_EXPORT_TIMEOUT:2s}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+
+platform:
+  data-service:
+    max-page-size: ${DATA_SERVICE_MAX_PAGE_SIZE:500}
+    query-timeout-seconds: ${DATA_SERVICE_QUERY_TIMEOUT_SECONDS:10}
+    sql-security:
+      max-table-references: ${DATA_SERVICE_SQL_MAX_TABLE_REFERENCES:1}
+      max-joins: ${DATA_SERVICE_SQL_MAX_JOINS:0}
+      forbid-select-star: ${DATA_SERVICE_SQL_FORBID_SELECT_STAR:true}
+    cache:
+      local-maximum-size: ${DATA_SERVICE_CACHE_LOCAL_MAXIMUM_SIZE:10000}
+      stale-ttl: ${DATA_SERVICE_CACHE_STALE_TTL:5m}
+      lock-ttl: ${DATA_SERVICE_CACHE_LOCK_TTL:10s}
+      lock-wait: ${DATA_SERVICE_CACHE_LOCK_WAIT:500ms}
+      redis-retry: ${DATA_SERVICE_CACHE_REDIS_RETRY:10s}
+    resilience:
+      max-concurrent-per-api: ${DATA_SERVICE_MAX_CONCURRENT_PER_API:20}
+      failure-threshold: ${DATA_SERVICE_CIRCUIT_FAILURE_THRESHOLD:5}
+      open-duration: ${DATA_SERVICE_CIRCUIT_OPEN_DURATION:30s}
+    slo:
+      initial-delay-ms: ${DATA_SERVICE_SLO_INITIAL_DELAY_MS:30000}
+      evaluation-interval-ms: ${DATA_SERVICE_SLO_EVALUATION_INTERVAL_MS:60000}
+    notification:
+      initial-delay-ms: ${DATA_SERVICE_NOTIFICATION_INITIAL_DELAY_MS:10000}
+      dispatch-interval-ms: ${DATA_SERVICE_NOTIFICATION_DISPATCH_INTERVAL_MS:10000}
+      max-attempts: ${DATA_SERVICE_NOTIFICATION_MAX_ATTEMPTS:5}
+      retry-base-seconds: ${DATA_SERVICE_NOTIFICATION_RETRY_BASE_SECONDS:10}
+      allow-insecure-http: ${DATA_SERVICE_NOTIFICATION_ALLOW_INSECURE_HTTP:false}
+    security:
+      master-key: ${DATA_SERVICE_MASTER_KEY:local-development-master-key-change-before-production}
+      timestamp-skew: ${DATA_SERVICE_TIMESTAMP_SKEW:5m}
+    admin:
+      bootstrap:
+        enabled: ${DATA_SERVICE_BOOTSTRAP_ADMIN_ENABLED:true}
+        username: ${DATA_SERVICE_BOOTSTRAP_ADMIN_USERNAME:admin}
+        password: ${DATA_SERVICE_BOOTSTRAP_ADMIN_PASSWORD:Admin@123456}
+        display-name: ${DATA_SERVICE_BOOTSTRAP_ADMIN_DISPLAY_NAME:系统管理员}
+      session-duration: ${DATA_SERVICE_ADMIN_SESSION_DURATION:8h}
+      secure-cookie: ${DATA_SERVICE_ADMIN_SECURE_COOKIE:false}
+      max-login-attempts: ${DATA_SERVICE_ADMIN_MAX_LOGIN_ATTEMPTS:5}
+      lock-duration: ${DATA_SERVICE_ADMIN_LOCK_DURATION:15m}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"

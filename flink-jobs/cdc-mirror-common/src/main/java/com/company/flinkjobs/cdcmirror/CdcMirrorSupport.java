@@ -1,4 +1,4 @@
-package com.company.flinkjobs.cdcmirror;
+﻿package com.company.flinkjobs.cdcmirror;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,7 +30,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
  * (id: BIGINT or DECIMAL depending on source engine, amount: DECIMAL,
  * created_at: BIGINT epoch millis - decimal.handling.mode=string on the
  * Debezium connector side means id/amount arrive as JSON strings, not
- * numbers, same as data-platform-service's own Flink SQL jobs rely on),
+ * numbers, same as data-processing-platform-service's own Flink SQL jobs rely on),
  * not a generic any-schema mirror - see TaskStatsJob's own javadoc for why
  * hand-written jars are scoped to one concrete job rather than a fully
  * dynamic schema.

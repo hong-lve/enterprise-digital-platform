@@ -1,5 +1,5 @@
-{
-  "title": "data-platform-service overview",
+﻿{
+  "title": "data-processing-platform-service overview",
   "uid": "data-platform-overview",
   "timezone": "browser",
   "schemaVersion": 39,
@@ -14,11 +14,11 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "sum(jvm_memory_used_bytes{job=\"data-platform-service\", area=\"heap\"})",
+          "expr": "sum(jvm_memory_used_bytes{job=\"data-processing-platform-service\", area=\"heap\"})",
           "legendFormat": "heap used"
         },
         {
-          "expr": "sum(jvm_memory_max_bytes{job=\"data-platform-service\", area=\"heap\"})",
+          "expr": "sum(jvm_memory_max_bytes{job=\"data-processing-platform-service\", area=\"heap\"})",
           "legendFormat": "heap max"
         }
       ],
@@ -31,7 +31,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
-          "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{job=\"data-platform-service\"}[1m]))",
+          "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{job=\"data-processing-platform-service\"}[1m]))",
           "legendFormat": "{{uri}} [{{status}}]"
         }
       ],
@@ -44,7 +44,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"data-platform-service\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"data-processing-platform-service\"}[5m])))",
           "legendFormat": "{{uri}}"
         }
       ],
@@ -57,15 +57,15 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
-          "expr": "hikaricp_connections_active{job=\"data-platform-service\"}",
+          "expr": "hikaricp_connections_active{job=\"data-processing-platform-service\"}",
           "legendFormat": "active"
         },
         {
-          "expr": "hikaricp_connections_idle{job=\"data-platform-service\"}",
+          "expr": "hikaricp_connections_idle{job=\"data-processing-platform-service\"}",
           "legendFormat": "idle"
         },
         {
-          "expr": "hikaricp_connections_pending{job=\"data-platform-service\"}",
+          "expr": "hikaricp_connections_pending{job=\"data-processing-platform-service\"}",
           "legendFormat": "pending"
         }
       ],
@@ -78,11 +78,11 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "targets": [
         {
-          "expr": "process_cpu_usage{job=\"data-platform-service\"}",
+          "expr": "process_cpu_usage{job=\"data-processing-platform-service\"}",
           "legendFormat": "process CPU"
         },
         {
-          "expr": "system_cpu_usage{job=\"data-platform-service\"}",
+          "expr": "system_cpu_usage{job=\"data-processing-platform-service\"}",
           "legendFormat": "system CPU"
         }
       ],
@@ -90,7 +90,7 @@
     },
     {
       "id": 6,
-      "title": "Recent logs (all bigdata-* containers + data-platform-service)",
+      "title": "Recent logs (all bigdata-* containers + data-processing-platform-service)",
       "type": "logs",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
       "datasource": { "type": "loki", "uid": "loki" },

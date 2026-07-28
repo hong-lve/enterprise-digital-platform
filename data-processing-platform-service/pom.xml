@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.2.4</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.company.dataops</groupId>
+  <artifactId>data-processing-platform-service</artifactId>
+  <version>0.1.0</version>
+  <name>data-processing-platform-service</name>
+
+  <properties>
+    <java.version>17</java.version>
+  </properties>
+
+  <!-- io.confluent artifacts (kafka-avro-serializer below) aren't on Maven
+       Central - Confluent publishes them from their own repo only. -->
+  <repositories>
+    <repository>
+      <id>confluent</id>
+      <url>https://packages.confluent.io/maven/</url>
+    </repository>
+  </repositories>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>2.48.3</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    <!--
+      CdcLagInspector decodes the same Avro+Confluent-Schema-Registry wire
+      format Kafka Connect's AvroConverter now writes (see
+      docker/bigdata/kafka-connect) - a plain StringDeserializer stopped
+      working the moment the CDC pipeline switched off JSON.
+    -->
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-avro-serializer</artifactId>
+      <version>7.6.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.baomidou</groupId>
+      <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+      <version>3.5.7</version>
+    </dependency>
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-mysql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>2.5.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- spring-boot-starter-web (Servlet stack) doesn't pull this in by
+           default - it's WebFlux territory. But org.springframework.http.
+           client.MultipartBodyBuilder (used by FlinkStreamSubmissionClient/
+           KafkaConnectClient-style multipart jar uploads) has a method whose
+           signature references org.reactivestreams.Publisher, so just
+           *loading* that class throws NoClassDefFoundError without this,
+           even though nothing here calls the reactive-specific method. Found
+           by actually running the service, not by reading the code. -->
+      <groupId>io.projectreactor</groupId>
+      <artifactId>reactor-core</artifactId>
+    </dependency>
+    <dependency>
+      <!-- Plain artifact (no classifier) - resolves its HTTP transport
+           transitively through normal Maven dependency resolution instead of
+           an uber/shaded jar. This project already hit a real bug from a
+           shaded jar (hive-jdbc:standalone in data-processing-platform-service) bundling
+           unrelocated old Spring/SLF4J classes that shadowed the real ones
+           and broke Spring Boot startup - avoiding that class of jar here on
+           purpose. -->
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-jdbc</artifactId>
+      <version>0.9.0</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <!-- Self-contained thin-driver jar, no transitive dependencies (see
+           its own pom on Maven Central) - lets DataSourceConnectionService's
+           existing ORACLE case actually connect instead of failing with "no
+           suitable driver found". -->
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <version>23.9.0.25.07</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <!-- Version pinned to match docker-compose.yml's apache/kafka:3.7.0
+           broker - Spring Boot's dependency management doesn't cover this
+           coordinate. Used by CdcLagInspector to peek at the latest message
+           on a topic (plain KafkaConsumer, not a tracked consumer group). -->
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <version>3.7.0</version>
+    </dependency>
+    <dependency>
+      <!-- Base32 only, for TOTP secrets (TotpService) - authenticator apps
+           (Google/Microsoft Authenticator) expect a Base32-encoded secret in
+           the otpauth:// URI per RFC 6238/Google's Key Uri Format, and the
+           JDK's own java.util.Base64 has no Base32 counterpart. -->
+      <groupId>commons-codec</groupId>
+      <artifactId>commons-codec</artifactId>
+      <version>1.16.1</version>
+    </dependency>
+    <dependency>
+      <!-- Redis isn't JDBC/SQL-queryable like the other four data source
+           types, so DataSourceConnectionService's REDIS branch uses this
+           directly instead of DriverManager. commons-pool2 below is Jedis's
+           only hard runtime dependency (connection pooling machinery). -->
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>5.1.5</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-pool2</artifactId>
+      <version>2.12.0</version>
+    </dependency>
+    <dependency>
+      <!-- Flink JAR storage (JarStorageService) - talks to the MinIO
+           container in docker-compose.yml via its S3-compatible API
+           (forcePathStyle, since MinIO doesn't do virtual-hosted-style
+           bucket addressing). Version pinned via the awssdk bom above
+           rather than a version() call here, so all aws-sdk transitive
+           modules (auth, regions, ...) resolve to matching versions.
+           Excludes its own transitive apache5-client/netty-nio-client:
+           this project's parent (spring-boot-starter-parent 3.2.4) pins
+           org.apache.httpcomponents.client5:httpclient5 to 5.2.3, which is
+           missing a class (TlsSocketStrategy) that awssdk 2.48.3's
+           apache5-client needs at 5.6.2+ - confirmed live, this combination
+           fails at startup with NoClassDefFoundError, not a guess. Rather
+           than fight Spring Boot's managed version, exclude both extra
+           clients and use url-connection-client (JDK's built-in
+           HttpURLConnection, no extra transitive deps) below instead - it's
+           enough for this service's small, infrequent jar PUT/GET/DELETE
+           calls. -->
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>apache5-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <!-- software.amazon.awssdk:s3 doesn't declare a default HTTP client
+           of its own (see exclusions above) - without one on the classpath,
+           S3Client.builder().build() fails with "Unable to load an HTTP
+           implementation". JarStorageService also wires this in explicitly
+           via .httpClient(UrlConnectionHttpClient.create()) rather than
+           relying on classpath auto-detection, so this stays the only S3
+           HTTP client implementation regardless of what other dependencies
+           this project picks up later. -->
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

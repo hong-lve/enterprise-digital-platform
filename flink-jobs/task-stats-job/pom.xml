@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -6,12 +6,12 @@
 
   <!--
     This is NOT part of the platform (services/, apps/) - it's an example of
-    the kind of business job a user submits through data-platform-web's
-    Flink 流作�?page. The platform only manages the lifecycle of whatever
+    the kind of business job a user submits through data-processing-platform-web's
+    Flink 流作�?page. The platform only manages the lifecycle of whatever
     jar you point it at; it doesn't ship the business logic itself. This one
     exists to prove the CDC -> Kafka -> Flink -> ClickHouse chain actually
     works end to end, consuming the CDC topic for data_platform_db.data_task_log
-    (data-platform-service's task execution history) and writing a rolling
+    (data-processing-platform-service's task execution history) and writing a rolling
     count of task results into ClickHouse.
 
     Standalone build, deliberately not a module of any service's pom - a

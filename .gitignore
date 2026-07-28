@@ -1,10 +1,12 @@
-# Maven build output (data-platform-service + every flink-jobs/flink-connectors module)
+# Maven build output (data-processing-platform-service + every flink-jobs/flink-connectors module)
 **/target/
 
-# Node / Vite (data-platform-web)
+# Node / Vite (data-processing-platform-web)
 **/node_modules/
-data-platform-web/dist/
-data-platform-web/.vite/
+data-processing-platform-web/dist/
+data-processing-platform-web/.vite/
+data-service-platform-web/dist/
+data-service-platform-web/.vite/
 *.tsbuildinfo
 
 # Vendored third-party binary jars for the Flink image - either rebuilt from
@@ -13,8 +15,8 @@ data-platform-web/.vite/
 # See docker/bigdata/README.md for how to (re)populate this directory.
 docker/bigdata/flink-lib/*.jar
 
-# Runtime upload storage (data-platform-service's local jar-storage fallback) - generated data, not source.
-data-platform-service/uploads/
+# Runtime upload storage (data-processing-platform-service's local jar-storage fallback) - generated data, not source.
+data-processing-platform-service/uploads/
 
 # MySQL control-plane backups (docker/bigdata/backup/backup.sh output) -
 # generated data that can contain encrypted-but-real data source credentials,

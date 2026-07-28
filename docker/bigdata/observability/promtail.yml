@@ -1,4 +1,4 @@
-server:
+﻿server:
   http_listen_port: 9080
 
 positions:
@@ -22,13 +22,13 @@ scrape_configs:
         regex: "/(.*)"
         target_label: "container"
 
-  # data-platform-service runs directly on the host, not as a container
+  # data-processing-platform-service runs directly on the host, not as a container
   # Docker service discovery above can see - tails the file it now writes
   # to (application.yml's logging.file.name) via the bind mount below
   # instead.
-  - job_name: data-platform-service
+  - job_name: data-processing-platform-service
     static_configs:
       - targets: ["localhost"]
         labels:
-          job: data-platform-service
-          __path__: /var/log/data-platform-service/*.log
+          job: data-processing-platform-service
+          __path__: /var/log/data-processing-platform-service/*.log

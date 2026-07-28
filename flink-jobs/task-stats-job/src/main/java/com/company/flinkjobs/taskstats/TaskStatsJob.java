@@ -1,4 +1,4 @@
-package com.company.flinkjobs.taskstats;
+﻿package com.company.flinkjobs.taskstats;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,7 +24,7 @@ import org.apache.flink.streaming.api.windowing.time.Time;
 
 /**
  * Example business job for realtime-compute-service's Flink 流作业 lifecycle
- * management: consumes the CDC topic for data-platform-service's
+ * management: consumes the CDC topic for data-processing-platform-service's
  * data_task_log (task execution history), counts task results in tumbling
  * windows, writes the counts into ClickHouse. Exists to prove the whole
  * chain (CDC -> Kafka -> Flink -> ClickHouse) actually works end to end -

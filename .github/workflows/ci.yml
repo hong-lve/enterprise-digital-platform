@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 # Placeholder pipeline: exercises the same build/test commands used locally
 # throughout this project (mvn test for the Java modules, npm run build for
@@ -13,7 +13,7 @@ on:
 
 jobs:
   backend:
-    name: data-platform-service (mvn test)
+    name: data-processing-platform-service (mvn test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,11 +29,11 @@ jobs:
         run: mvn -q -f flink-jobs/cdc-mirror-common/pom.xml install -DskipTests
       - name: Test cdc-mirror-common
         run: mvn -q -f flink-jobs/cdc-mirror-common/pom.xml test
-      - name: Test data-platform-service
-        run: mvn -q -f data-platform-service/pom.xml test
+      - name: Test data-processing-platform-service
+        run: mvn -q -f data-processing-platform-service/pom.xml test
 
   frontend:
-    name: data-platform-web (build)
+    name: data-processing-platform-web (build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,13 +41,13 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: data-platform-web/package-lock.json
+          cache-dependency-path: data-processing-platform-web/package-lock.json
       - name: Install dependencies
-        working-directory: data-platform-web
+        working-directory: data-processing-platform-web
         run: npm ci
       - name: Test
-        working-directory: data-platform-web
+        working-directory: data-processing-platform-web
         run: npm run test
       - name: Type-check + build
-        working-directory: data-platform-web
+        working-directory: data-processing-platform-web
         run: npm run build

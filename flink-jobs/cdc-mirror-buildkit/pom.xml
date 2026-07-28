@@ -1,11 +1,11 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <!--
-    Not a job itself - the runtime classpath data-platform-service's
+    Not a job itself - the runtime classpath data-processing-platform-service's
     JavaJobBuildService bundles into every jar it compiles from a user's
     online-edited Java source (see 数据平台/JAR 包管理's "在线编写" flow).
     Same dependency set as the five cdc-mirror-* sink modules (so a

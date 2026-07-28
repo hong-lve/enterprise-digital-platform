@@ -1,15 +1,20 @@
-global:
+﻿global:
   scrape_interval: 15s
 
 scrape_configs:
-  # data-platform-service runs on the developer's own machine (see
+  # data-processing-platform-service runs on the developer's own machine (see
   # docker/bigdata/README.md), not this remote host - reached via a reverse
   # SSH tunnel (-R 18085:127.0.0.1:8085, alongside the normal forward
   # tunnels) back to wherever it's actually running. Since Prometheus itself
   # runs with network_mode: host (see docker-compose.yml's prometheus
   # service), 127.0.0.1:18085 here means the tunnel's listener on this same
   # host, not a loopback address inside some other container.
-  - job_name: data-platform-service
+  - job_name: data-processing-platform-service
     metrics_path: /api/actuator/prometheus
     static_configs:
       - targets: ["127.0.0.1:18085"]
+
+  - job_name: data-service-platform-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["127.0.0.1:18087"]
