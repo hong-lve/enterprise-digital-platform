@@ -63,8 +63,21 @@ public class CdcSourceStatusScheduler {
         // was deleted outside this app) is deliberately left out - a human
         // can still recover it via the "状态" button, and attempting a
         // restart when Connect itself is unreachable would be pointless.
+        //
+        // Originally written as .in(..., "RUNNING", "FAILED") instead of
+        // "not UNKNOWN" - status(), below, stores Kafka Connect's *raw* task
+        // state verbatim whenever the connector exists (only the literal
+        // sentinel "UNKNOWN" means Connect itself was unreachable), so any
+        // other transient Kafka Connect state (e.g. "UNASSIGNED" during a
+        // worker rebalance right after kafka-connect restarts) got persisted
+        // once by this same method and then silently excluded from every
+        // future poll forever - confirmed live: cdc-source-1 sat showing
+        // "UNASSIGNED" for over 12 hours while the connector itself had long
+        // since become genuinely RUNNING again, because this exact query
+        // stopped selecting it the moment that one non-RUNNING/FAILED value
+        // got written.
         List<CdcSourceEntity> sourcesToCheck = cdcSourceMapper.selectList(new LambdaQueryWrapper<CdcSourceEntity>()
-            .in(CdcSourceEntity::getStatus, "RUNNING", "FAILED")
+            .ne(CdcSourceEntity::getStatus, "UNKNOWN")
             .isNotNull(CdcSourceEntity::getConnectorName));
         for (CdcSourceEntity source : sourcesToCheck) {
             boolean wasFailed = "FAILED".equals(source.getStatus());
