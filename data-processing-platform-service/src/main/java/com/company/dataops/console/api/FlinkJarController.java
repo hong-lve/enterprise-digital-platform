@@ -151,10 +151,48 @@ public class FlinkJarController {
         entity.setSizeBytes(stored.sizeBytes());
         entity.setDescription(request.description());
         entity.setUploader(uploader);
+        entity.setClassName(request.className());
+        entity.setSourceCode(request.sourceCode());
+        entity.setTargetType(request.targetType());
         flinkJarMapper.insert(entity);
 
         insertVersion(entity.getId(), stored, uploader);
         return ApiResponse.ok(entity);
+    }
+
+    /**
+     * Recompiles an existing jar's stored source with edited code and
+     * replaces its jar bytes in place (same storage-swap + version-history
+     * behavior as reupload()) - this is what lets a jar created via "在线
+     * 编写" actually be edited later instead of being a write-once artifact:
+     * compile() used to accept sourceCode only to throw it away after
+     * building the jar, so there was nothing to load back into the editor
+     * for a second pass.
+     */
+    @PutMapping("/{id}/recompile")
+    @PreAuthorize("hasAuthority('realtime:jar:upload')")
+    public ApiResponse<FlinkJarEntity> recompile(@PathVariable Long id, @Valid @RequestBody RecompileJarRequest request, Authentication authentication) {
+        FlinkJarEntity jar = flinkJarMapper.selectById(id);
+        if (jar == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "JAR 包不存在");
+        }
+        String uploader = authentication == null ? "anonymous" : authentication.getName();
+        rateLimiter.assertWithinLimit("ratelimit:jar-build:" + uploader, MAX_BUILDS_PER_WINDOW, WINDOW);
+        JavaJobBuildService.CompileResult result = javaJobBuildService.compileAndPackage(request.className(), request.sourceCode(), request.targetType());
+        StoredFile stored = storeBytes(result.jarBytes(), request.className() + ".jar");
+
+        jar.setOriginalName(stored.originalName());
+        jar.setStoredName(stored.storageKey());
+        jar.setStoragePath(stored.storageKey());
+        jar.setSizeBytes(stored.sizeBytes());
+        jar.setUploader(uploader);
+        jar.setClassName(request.className());
+        jar.setSourceCode(request.sourceCode());
+        jar.setTargetType(request.targetType());
+        flinkJarMapper.updateById(jar);
+
+        insertVersion(id, stored, uploader);
+        return ApiResponse.ok(jar);
     }
 
     /**
@@ -187,6 +225,16 @@ public class FlinkJarController {
     public record CompileJarRequest(
         @NotBlank(message = "名称不能为空") String name,
         String description,
+        @NotBlank(message = "入口类名不能为空") String className,
+        @NotBlank(message = "源代码不能为空") String sourceCode,
+        String targetType
+    ) {
+    }
+
+    // No name/description here (unlike CompileJarRequest) - recompile() only
+    // ever touches code/bytes, the same split as update() (name/description)
+    // vs reupload() (bytes) already have for a plain-uploaded jar.
+    public record RecompileJarRequest(
         @NotBlank(message = "入口类名不能为空") String className,
         @NotBlank(message = "源代码不能为空") String sourceCode,
         String targetType

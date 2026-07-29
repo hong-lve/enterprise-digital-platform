@@ -12,6 +12,12 @@ export interface FlinkJarRecord {
   description?: string;
   uploader?: string;
   createdAt?: string;
+  // Only set for jars created via "在线编写" - see FlinkJarController's
+  // compile()/recompile(). A plain file upload never has these, and the
+  // JAR 包管理 page only shows a "查看/编辑代码" action when sourceCode is present.
+  className?: string;
+  sourceCode?: string;
+  targetType?: JavaBuildTargetType;
 }
 
 export interface FlinkJarVersionRecord {
@@ -112,4 +118,13 @@ export function compileFlinkJar(name: string, description: string | undefined, c
  */
 export function debugRunFlinkJar(className: string, sourceCode: string, programArgs: string, targetType: JavaBuildTargetType) {
   return http.post<ApiResponse<{ output: string }>>(`${basePath}/debug-run`, { className, sourceCode, programArgs, targetType }, { skipErrorMessage: true, timeout: 30000 }).then(unwrap);
+}
+
+/**
+ * Recompiles an existing "在线编写" jar's edited source and replaces its jar
+ * bytes in place (same version-history behavior as reuploadFlinkJar) - name/
+ * description aren't touched here, that's still updateFlinkJar's job.
+ */
+export function recompileFlinkJar(id: number, className: string, sourceCode: string, targetType: JavaBuildTargetType) {
+  return http.put<ApiResponse<FlinkJarRecord>>(`${basePath}/${id}/recompile`, { className, sourceCode, targetType }, { skipErrorMessage: true }).then(unwrap);
 }

@@ -16,4 +16,11 @@ public class FlinkJarEntity {
     private String description;
     private String uploader;
     private LocalDateTime createdAt;
+    // Only set for jars created via "在线编写" (FlinkJarController.compile()/
+    // recompile()) - null for plain file uploads, which never have source to
+    // store. The JAR 包管理 frontend uses sourceCode's presence to decide
+    // whether to offer a "查看/编辑代码" action for a given row.
+    private String className;
+    private String sourceCode;
+    private String targetType;
 }

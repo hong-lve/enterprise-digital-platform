@@ -12,6 +12,7 @@ import {
   flinkJarDownloadUrl,
   listFlinkJarVersions,
   pageFlinkJars,
+  recompileFlinkJar,
   reuploadFlinkJar,
   restoreFlinkJarVersion,
   updateFlinkJar,
@@ -37,6 +38,12 @@ interface UploadFormValues {
 interface CompileFormValues {
   name: string;
   description?: string;
+  className: string;
+  programArgs?: string;
+  targetType: JavaBuildTargetType;
+}
+
+interface EditCodeFormValues {
   className: string;
   programArgs?: string;
   targetType: JavaBuildTargetType;
@@ -75,6 +82,14 @@ export function JarPackagesPage() {
   const [debugOutput, setDebugOutput] = useState<string | null>(null);
   const [compileForm] = Form.useForm<CompileFormValues>();
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const [editCodeJar, setEditCodeJar] = useState<FlinkJarRecord | null>(null);
+  const [editCodeSource, setEditCodeSource] = useState('');
+  const [editCodeSaving, setEditCodeSaving] = useState(false);
+  const [editCodeError, setEditCodeError] = useState<string | null>(null);
+  const [editCodeDebugRunning, setEditCodeDebugRunning] = useState(false);
+  const [editCodeDebugOutput, setEditCodeDebugOutput] = useState<string | null>(null);
+  const [editCodeForm] = Form.useForm<EditCodeFormValues>();
+  const editCodeEditorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const can = useAuthStore((state) => state.hasPermission);
 
   const load = () => {
@@ -135,6 +150,50 @@ export function JarPackagesPage() {
         setCompileError(serverMessage || '调试运行失败');
       })
       .finally(() => setDebugRunning(false));
+  };
+
+  const openEditCode = (record: FlinkJarRecord) => {
+    setEditCodeJar(record);
+    setEditCodeSource(record.sourceCode ?? '');
+    setEditCodeError(null);
+    setEditCodeDebugOutput(null);
+    editCodeForm.resetFields();
+    editCodeForm.setFieldsValue({ className: record.className, targetType: record.targetType });
+  };
+
+  const submitEditCode = (values: EditCodeFormValues) => {
+    if (!editCodeJar) return;
+    setEditCodeSaving(true);
+    setEditCodeError(null);
+    recompileFlinkJar(editCodeJar.id, values.className, editCodeSource, values.targetType)
+      .then(() => {
+        message.success('编译成功，已更新 jar 包');
+        setEditCodeJar(null);
+        load();
+      })
+      .catch((error) => {
+        const serverMessage = axios.isAxiosError(error) ? error.response?.data?.message : undefined;
+        setEditCodeError(serverMessage || '编译失败，请检查代码');
+      })
+      .finally(() => setEditCodeSaving(false));
+  };
+
+  const runEditCodeDebug = () => {
+    const className = editCodeForm.getFieldValue('className');
+    if (!className) {
+      message.warning('请先填写入口类全限定名');
+      return;
+    }
+    setEditCodeDebugRunning(true);
+    setEditCodeError(null);
+    setEditCodeDebugOutput(null);
+    debugRunFlinkJar(className, editCodeSource, editCodeForm.getFieldValue('programArgs') ?? '', editCodeForm.getFieldValue('targetType'))
+      .then((result) => setEditCodeDebugOutput(result.output))
+      .catch((error) => {
+        const serverMessage = axios.isAxiosError(error) ? error.response?.data?.message : undefined;
+        setEditCodeError(serverMessage || '调试运行失败');
+      })
+      .finally(() => setEditCodeDebugRunning(false));
   };
 
   const submitUpload = (values: UploadFormValues) => {
@@ -259,10 +318,13 @@ export function JarPackagesPage() {
           { title: '上传时间', dataIndex: 'createdAt', width: 180 },
           {
             title: '操作',
-            width: 190,
+            width: 320,
             render: (_, record) => (
               <Space size="small">
                 {can('realtime:jar:update') && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>}
+                {can('realtime:jar:upload') && record.sourceCode && (
+                  <Button size="small" icon={<CodeOutlined />} onClick={() => openEditCode(record)}>查看/编辑代码</Button>
+                )}
                 <Button size="small" icon={<DownloadOutlined />} href={flinkJarDownloadUrl(record.id)} target="_blank" rel="noreferrer">下载</Button>
                 {can('realtime:jar:delete') && (
                   <Popconfirm title="确定删除这个 JAR 包？" onConfirm={() => handleDelete(record.id)}>
@@ -373,6 +435,89 @@ export function JarPackagesPage() {
               }}
             >
               {debugOutput}
+            </pre>
+          </Form.Item>
+        )}
+      </Modal>
+
+      <Modal
+        title={`查看/编辑代码${editCodeJar ? ` - ${editCodeJar.name}` : ''}`}
+        open={!!editCodeJar}
+        onCancel={() => setEditCodeJar(null)}
+        onOk={() => editCodeForm.submit()}
+        confirmLoading={editCodeSaving}
+        okText="编译并保存"
+        width={960}
+        destroyOnClose
+        afterOpenChange={(open) => {
+          if (open) {
+            editCodeEditorRef.current?.layout();
+          }
+        }}
+      >
+        <Typography.Paragraph type="secondary">
+          修改后点击"编译并保存"会重新编译并直接替换这个 jar 包正在使用的文件（旧版本仍保留在下面"编辑"弹窗的历史版本里，可以恢复）。跟"在线编写"一样，"调试运行"只是先跑一下看看代码通不通，不会保存。
+        </Typography.Paragraph>
+        <Form form={editCodeForm} layout="vertical" onFinish={submitEditCode}>
+          <Form.Item
+            name="className"
+            label="入口类全限定名"
+            rules={[{ required: true, message: '请输入入口类全限定名' }, { pattern: /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/, message: '需要是合法的 Java 全限定类名' }]}
+            extra="要跟下面代码里 public class 的类名（含包名）完全一致"
+          >
+            <Input placeholder="com.company.userjobs.MyCustomJob" />
+          </Form.Item>
+          <Form.Item
+            name="targetType"
+            label="目标数据源类型"
+            rules={[{ required: true, message: '请选择目标数据源类型' }]}
+            extra="决定编译时合入哪个已有驱动包"
+          >
+            <Select options={TARGET_TYPE_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            name="programArgs"
+            label="程序参数（仅调试运行使用）"
+            extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口）"
+          >
+            <Input placeholder="--kafka-bootstrap localhost:19092 --topic mysqldemo.cdc_demo.test_orders_mysql --sink-host localhost --sink-port 6379 ..." />
+          </Form.Item>
+        </Form>
+        <Space style={{ marginBottom: 12 }}>
+          <Button icon={<BugOutlined />} loading={editCodeDebugRunning} onClick={runEditCodeDebug}>调试运行</Button>
+        </Space>
+        <Form.Item label="源代码" style={{ marginBottom: editCodeError ? 12 : 0 }}>
+          <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+            <Editor
+              height="420px"
+              language="java"
+              value={editCodeSource}
+              onChange={(value) => setEditCodeSource(value ?? '')}
+              onMount={(editor) => {
+                editCodeEditorRef.current = editor;
+                editor.layout();
+              }}
+              options={{ minimap: { enabled: false }, fontSize: 13 }}
+            />
+          </div>
+        </Form.Item>
+        {editCodeError && <Alert type="error" showIcon message="编译失败" description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{editCodeError}</pre>} style={{ marginBottom: editCodeDebugOutput ? 12 : 0 }} />}
+        {editCodeDebugOutput && (
+          <Form.Item label="调试输出">
+            <pre
+              style={{
+                whiteSpace: 'pre-wrap',
+                margin: 0,
+                maxHeight: 300,
+                overflow: 'auto',
+                background: '#001529',
+                color: '#d9d9d9',
+                padding: 12,
+                borderRadius: 6,
+                fontSize: 12
+              }}
+            >
+              {editCodeDebugOutput}
             </pre>
           </Form.Item>
         )}
