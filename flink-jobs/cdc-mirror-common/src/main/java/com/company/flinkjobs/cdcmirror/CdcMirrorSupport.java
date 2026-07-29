@@ -1,16 +1,16 @@
-﻿package com.company.flinkjobs.cdcmirror;
+package com.company.flinkjobs.cdcmirror;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.nio.charset.StandardCharsets;
+import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+import io.confluent.kafka.serializers.KafkaAvroDeserializerConfig;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import org.apache.avro.generic.GenericRecord;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -29,21 +29,19 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
  * mirrors CdcTableSchemaService's declared Flink types for that schema
  * (id: BIGINT or DECIMAL depending on source engine, amount: DECIMAL,
  * created_at: BIGINT epoch millis - decimal.handling.mode=string on the
- * Debezium connector side means id/amount arrive as JSON strings, not
- * numbers, same as data-processing-platform-service's own Flink SQL jobs rely on),
- * not a generic any-schema mirror - see TaskStatsJob's own javadoc for why
- * hand-written jars are scoped to one concrete job rather than a fully
- * dynamic schema.
+ * Debezium connector side means id/amount arrive as plain strings regardless
+ * of whether the wire format is JSON or Avro, same as data-processing-platform-service's
+ * own Flink SQL jobs rely on), not a generic any-schema mirror - see
+ * TaskStatsJob's own javadoc for why hand-written jars are scoped to one
+ * concrete job rather than a fully dynamic schema.
  *
- * Plain Debezium JSON, not Avro - confirmed live that every currently-
- * registered CDC connector (mysqldemo-connector-v5/oracledemo-connector-v5)
- * uses org.apache.kafka.connect.json.JsonConverter, not Confluent's
- * AvroConverter, regardless of what got wired up in an earlier pass at this
- * (see git history) - an Avro-decoding source here would silently drop
- * every record (KafkaAvroDeserializer throws on non-Avro bytes, and the
- * row-extractor's own catch-and-return-null swallows that), producing zero
- * rows with no visible error. Match the deployment that's actually running,
- * not a config that was tried once and reverted.
+ * Kafka Connect's converters now emit Avro (Confluent wire format: magic
+ * byte + 4-byte schema id + Avro binary) instead of plain Debezium JSON, with
+ * every CDC topic's schema registered in Confluent Schema Registry - this is
+ * a real schema-enforcement boundary (a producer-side field type change that
+ * isn't a compatible schema evolution gets rejected at the registry, not
+ * discovered downstream as a silently-corrupted row), not just a catalog of
+ * what the JSON happens to look like today.
  */
 public final class CdcMirrorSupport {
     private CdcMirrorSupport() {
@@ -69,20 +67,20 @@ public final class CdcMirrorSupport {
     // Kafka client, not a literal in source.
     private static final String KAFKA_SSL_TRUSTSTORE_LOCATION = "/opt/flink/conf/kafka-truststore.p12";
 
-    public static DataStream<Map<String, String>> sourceRows(StreamExecutionEnvironment env, String bootstrapServers, String topic, String groupId) {
-        KafkaSource<String> source = KafkaSource.<String>builder()
+    public static DataStream<Map<String, String>> sourceRows(StreamExecutionEnvironment env, String bootstrapServers, String topic, String groupId, String schemaRegistryUrl) {
+        KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
             .setBootstrapServers(bootstrapServers)
             .setTopics(topic)
             .setGroupId(groupId)
             .setStartingOffsets(OffsetsInitializer.earliest())
-            .setValueOnlyDeserializer(new NullSafeStringDeserializer())
+            .setValueOnlyDeserializer(new NullSafeByteArrayDeserializer())
             .setProperty("security.protocol", "SSL")
             .setProperty("ssl.truststore.location", KAFKA_SSL_TRUSTSTORE_LOCATION)
             .setProperty("ssl.truststore.type", "PKCS12")
             .setProperty("ssl.truststore.password", System.getenv().getOrDefault("KAFKA_TLS_PASSWORD", ""))
             .build();
         return env.fromSource(source, WatermarkStrategy.noWatermarks(), "cdc-source")
-            .map(new DebeziumRowExtractor())
+            .map(new DebeziumAvroRowExtractor(topic, schemaRegistryUrl))
             .filter(row -> row != null);
     }
 
@@ -90,62 +88,89 @@ public final class CdcMirrorSupport {
      * Debezium's tombstones.on.delete=true default means every DELETE
      * produces a normal delete changelog record AND a follow-up Kafka
      * tombstone (null value, the log-compaction "this key is gone"
-     * convention) - SimpleStringSchema chokes on that with a
-     * NullPointerException that crashes the source before
-     * DebeziumRowExtractor's own null checks ever run. Same fix
-     * TaskStatsJob already uses for the identical problem.
+     * convention) - a plain byte[] deserializer that chokes on null would
+     * crash the source before DebeziumAvroRowExtractor's own null check ever
+     * runs. Same fix TaskStatsJob already used for the identical problem
+     * back when this was a String deserializer.
      */
-    private static class NullSafeStringDeserializer implements DeserializationSchema<String> {
+    private static class NullSafeByteArrayDeserializer implements DeserializationSchema<byte[]> {
         @Override
-        public String deserialize(byte[] message) {
-            return message == null ? null : new String(message, StandardCharsets.UTF_8);
+        public byte[] deserialize(byte[] message) {
+            return message;
         }
 
         @Override
-        public boolean isEndOfStream(String nextElement) {
+        public boolean isEndOfStream(byte[] nextElement) {
             return false;
         }
 
         @Override
-        public TypeInformation<String> getProducedType() {
-            return Types.STRING;
+        public TypeInformation<byte[]> getProducedType() {
+            return org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO;
         }
     }
 
     /**
-     * Unwraps payload.after into a plain field-name (lowercased) -> text
-     * value map so the same row shape works regardless of whether the
+     * Decodes Kafka Connect's AvroConverter wire format (a leading magic
+     * byte + 4-byte schema id registered in Confluent Schema Registry,
+     * followed by the Avro binary payload) via the same
+     * KafkaAvroDeserializer Confluent's own consumers use - it resolves the
+     * writer schema by id from the registry itself at runtime, so this
+     * class doesn't need to know any table's schema ahead of time, the same
+     * dynamic-row-shape behavior the old Jackson JsonNode-based JSON parsing
+     * had. Unwraps envelope.after into a plain field-name (lowercased) ->
+     * text value map so the same row shape works regardless of whether the
      * source engine's identifiers came through upper- or lower-case
      * (MySQL's test_orders_mysql is lowercase, Oracle's TEST_ORDERS_ORACLE
      * is upper-case). Skips delete/tombstone records (op != c/u/r) the same
      * way TaskStatsJob does - a mirror job has nothing meaningful to write
      * for a delete without also implementing a delete-aware sink, which
-     * none of these five need for this demo schema.
+     * none of these five need for this demo schema. Unlike the JSON
+     * envelope (which nests op/after under a "payload" key alongside a
+     * sibling "schema" key), Avro has no such wrapper - the schema lives in
+     * the registry instead, so op/after sit directly on the decoded record.
      */
-    private static class DebeziumRowExtractor implements MapFunction<String, Map<String, String>> {
-        private transient ObjectMapper mapper;
+    private static class DebeziumAvroRowExtractor implements MapFunction<byte[], Map<String, String>> {
+        private final String topic;
+        private final String schemaRegistryUrl;
+        private transient KafkaAvroDeserializer deserializer;
+
+        DebeziumAvroRowExtractor(String topic, String schemaRegistryUrl) {
+            this.topic = topic;
+            this.schemaRegistryUrl = schemaRegistryUrl;
+        }
 
         @Override
-        public Map<String, String> map(String value) {
-            if (mapper == null) {
-                mapper = new ObjectMapper();
+        public Map<String, String> map(byte[] value) {
+            if (value == null) {
+                return null;
+            }
+            if (deserializer == null) {
+                Map<String, Object> config = new HashMap<>();
+                config.put(KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
+                config.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, false);
+                deserializer = new KafkaAvroDeserializer();
+                deserializer.configure(config, false);
             }
             try {
-                JsonNode root = mapper.readTree(value);
-                JsonNode payload = root.has("payload") ? root.get("payload") : root;
-                String op = payload.path("op").asText("");
+                Object decoded = deserializer.deserialize(topic, value);
+                if (!(decoded instanceof GenericRecord envelope)) {
+                    return null;
+                }
+                Object opValue = envelope.get("op");
+                String op = opValue == null ? "" : opValue.toString();
                 if (!"c".equals(op) && !"u".equals(op) && !"r".equals(op)) {
                     return null;
                 }
-                JsonNode after = payload.get("after");
-                if (after == null || after.isNull()) {
+                Object afterValue = envelope.get("after");
+                if (!(afterValue instanceof GenericRecord after)) {
                     return null;
                 }
                 Map<String, String> row = new LinkedHashMap<>();
-                after.fields().forEachRemaining(entry -> {
-                    JsonNode fieldValue = entry.getValue();
-                    row.put(entry.getKey().toLowerCase(Locale.ROOT), fieldValue.isNull() ? null : fieldValue.asText());
-                });
+                for (org.apache.avro.Schema.Field field : after.getSchema().getFields()) {
+                    Object fieldValue = after.get(field.name());
+                    row.put(field.name().toLowerCase(Locale.ROOT), fieldValue == null ? null : fieldValue.toString());
+                }
                 return row;
             } catch (Exception exception) {
                 return null;
