@@ -113,7 +113,20 @@ platform:
     # or Flink executes on their own, not this JVM: DebeziumConnectorConfigBuilder's
     # schema.history.internal.kafka.bootstrap.servers, and CdcTableSchemaService's
     # generated 'properties.bootstrap.servers' Flink SQL DDL.
+    # Stale claim above ("PLAINTEXT listener") - kafka:9092 has been SSL-only
+    # since the TLS migration; kafka-tls-password below is what actually lets
+    # DebeziumConnectorConfigBuilder's schema-history client authenticate
+    # against it now.
     kafka-bootstrap-servers-internal: ${KAFKA_BOOTSTRAP_SERVERS_INTERNAL:kafka:9092}
+    # Same truststore password every other Kafka client in docker-compose.yml
+    # uses (KAFKA_TLS_PASSWORD there) - needed here specifically for
+    # DebeziumConnectorConfigBuilder's schema.history.internal.producer/
+    # consumer.* SSL properties, a separate Kafka client from the connector
+    # task's own (which Kafka Connect's worker-level CONNECT_* config already
+    # covers) that was left unconfigured when Kafka went SSL-only, since the
+    # already-running CDC connectors never needed a fresh PUT that would have
+    # exercised this code path again.
+    kafka-tls-password: ${KAFKA_TLS_PASSWORD:}
     # Same internal-vs-host split as kafka-bootstrap-servers above, now that
     # Kafka Connect's converters emit Avro via Confluent Schema Registry
     # (docker/bigdata/kafka-connect) instead of plain JSON. This JVM

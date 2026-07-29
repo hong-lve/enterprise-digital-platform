@@ -26,10 +26,34 @@ public class DebeziumConnectorConfigBuilder {
     // schema-history producer/consumer unable to resolve "localhost" from
     // inside the kafka-connect container.
     private final String kafkaBootstrapServers;
+    // Debezium's schema-history producer/consumer is a Kafka client separate
+    // from the connector task's own (which inherits Kafka Connect worker-
+    // level CONNECT_SECURITY_PROTOCOL etc.) and from this JVM's own clients
+    // (which get their SSL config from RestTemplate/wherever else, not from
+    // here) - it needs its own explicit security.protocol/truststore
+    // properties, confirmed live: without these, schema.history.internal.
+    // kafka.bootstrap.servers=kafka:9092 (an SSL-only listener) just gets
+    // "Bootstrap broker kafka:9092 disconnected" forever and the task fails
+    // with "Timeout expired while fetching topic metadata".
+    private final String kafkaTlsPassword;
 
     public DebeziumConnectorConfigBuilder(
-            @Value("${platform.bigdata.kafka-bootstrap-servers-internal:kafka:9092}") String kafkaBootstrapServers) {
+            @Value("${platform.bigdata.kafka-bootstrap-servers-internal:kafka:9092}") String kafkaBootstrapServers,
+            @Value("${platform.bigdata.kafka-tls-password:}") String kafkaTlsPassword) {
         this.kafkaBootstrapServers = kafkaBootstrapServers;
+        this.kafkaTlsPassword = kafkaTlsPassword;
+    }
+
+    private void addSchemaHistorySslProperties(Map<String, Object> config) {
+        if (kafkaTlsPassword == null || kafkaTlsPassword.isBlank()) {
+            return;
+        }
+        for (String role : new String[] {"producer", "consumer"}) {
+            config.put("schema.history.internal." + role + ".security.protocol", "SSL");
+            config.put("schema.history.internal." + role + ".ssl.truststore.location", "/etc/kafka/secrets/truststore.p12");
+            config.put("schema.history.internal." + role + ".ssl.truststore.type", "PKCS12");
+            config.put("schema.history.internal." + role + ".ssl.truststore.password", kafkaTlsPassword);
+        }
     }
 
     public Map<String, Object> build(CdcSourceEntity source, DataSourceEntity dataSource) {
@@ -70,6 +94,7 @@ public class DebeziumConnectorConfigBuilder {
         config.put("table.include.list", source.getTableIncludeList());
         config.put("schema.history.internal.kafka.topic", "schema-changes." + source.getTopicPrefix());
         config.put("schema.history.internal.kafka.bootstrap.servers", kafkaBootstrapServers);
+        addSchemaHistorySslProperties(config);
         config.put("include.schema.changes", "false");
         // Default (precise) mode encodes DECIMAL columns as bytes via Kafka
         // Connect's Decimal logical type (base64 in JSON, Avro's decimal
@@ -113,6 +138,7 @@ public class DebeziumConnectorConfigBuilder {
         config.put("table.include.list", source.getTableIncludeList());
         config.put("schema.history.internal.kafka.topic", "schema-changes." + source.getTopicPrefix());
         config.put("schema.history.internal.kafka.bootstrap.servers", kafkaBootstrapServers);
+        addSchemaHistorySslProperties(config);
         // Same reasoning as MySQL's decimal.handling.mode above - Oracle
         // NUMBER columns hit the identical bytes-vs-plain-string problem,
         // confirmed live (this platform's demo table's NUMBER columns came
