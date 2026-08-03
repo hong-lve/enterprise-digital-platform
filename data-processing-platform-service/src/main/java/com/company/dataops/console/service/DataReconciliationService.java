@@ -1,14 +1,20 @@
 package com.company.dataops.console.service;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.DataSourceEntity;
 import com.company.dataops.console.entity.ReconciliationCheckEntity;
 import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.mapper.ReconciliationCheckMapper;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
 import com.company.dataops.console.service.datasource.RedisConnectionService;
+import com.company.dataops.console.service.datasource.SqlIdentifierValidator;
 import com.company.dataops.console.service.query.QueryResult;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -16,27 +22,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * Compares row counts between a CDC source table and wherever it's been
- * mirrored to, catching the class of problem none of this platform's other
- * alerts can: a message silently dropped mid-stream, a sink write that
- * failed and got skipped, a connector resumed from the wrong offset after a
- * restart. All of those leave the connector "RUNNING" and the topic
- * "fresh" (CdcLagInspector's freshness proxy only tracks the latest
- * message's timestamp, not whether every message in between actually made
- * it through) - the only way to catch them is actually comparing how many
- * rows ended up on each side.
+ * Compares a CDC source table against wherever it's been mirrored to,
+ * catching the class of problem none of this platform's other alerts can: a
+ * message silently dropped mid-stream, a sink write that failed and got
+ * skipped, a connector resumed from the wrong offset after a restart. All of
+ * those leave the connector "RUNNING" and the topic "fresh" - the only way
+ * to catch them is comparing the two sides directly.
  *
- * Deliberately count-based, not row-by-row/checksum-based: a full row
- * comparison would mean streaming both tables through this JVM to diff
- * them, real I/O and memory cost for every check on every poll cycle. A
- * count mismatch can't prove exactly *which* rows are missing, but it's
- * enough to catch that something needs a human's attention - the existing
- * "实时数据查询" page is there for someone to actually go look once this
- * alert fires.
+ * Two check types (checkType on ReconciliationCheckEntity):
+ * - ROW_COUNT (default, original behavior): COUNT(*) on each side.
+ * - AGGREGATE: SUM(aggregateColumn) on each side - catches "same row count,
+ *   wrong values" that ROW_COUNT completely misses (a sink write that
+ *   corrupted a numeric column, a lossy type conversion, etc.).
+ * Both types honor an optional partitionColumn: instead of one table-wide
+ * number, groups by that column on each side and diffs per partition value,
+ * so a drift can be pinned to which partition/day it's actually in.
  */
 @Service
 public class DataReconciliationService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DataReconciliationService.class);
+    private static final String SINGLE_VALUE_KEY = "__all__";
 
     private final ReconciliationCheckMapper reconciliationCheckMapper;
     private final DataSourceMapper dataSourceMapper;
@@ -79,27 +84,58 @@ public class DataReconciliationService {
         if (source == null || target == null) {
             return recordError(check, "源或目标数据源不存在，可能已被删除");
         }
+        boolean isAggregate = "AGGREGATE".equalsIgnoreCase(check.getCheckType());
+        if (isAggregate && (check.getAggregateColumn() == null || check.getAggregateColumn().isBlank())) {
+            return recordError(check, "AGGREGATE 类型对账必须填写聚合字段");
+        }
+        boolean partitioned = check.getPartitionColumn() != null && !check.getPartitionColumn().isBlank();
         try {
-            long sourceCount = count(source, check.getSourceDatabase(), check.getSourceTable());
-            long targetCount = count(target, check.getTargetDatabase(), check.getTargetTable());
-            long diff = Math.abs(sourceCount - targetCount);
+            Map<String, Double> sourceMetrics = queryMetric(source, check.getSourceDatabase(), check.getSourceTable(),
+                check.getAggregateColumn(), check.getPartitionColumn(), isAggregate);
+            Map<String, Double> targetMetrics = queryMetric(target, check.getTargetDatabase(), check.getTargetTable(),
+                check.getAggregateColumn(), check.getPartitionColumn(), isAggregate);
+
+            double sourceTotal = sourceMetrics.values().stream().mapToDouble(Double::doubleValue).sum();
+            double targetTotal = targetMetrics.values().stream().mapToDouble(Double::doubleValue).sum();
+            double diff = Math.abs(sourceTotal - targetTotal);
             int tolerance = check.getTolerance() == null ? 0 : check.getTolerance();
             String previousState = check.getLastState();
-            String newState = diff > tolerance ? "DRIFT" : "OK";
 
-            check.setLastSourceCount(sourceCount);
-            check.setLastTargetCount(targetCount);
-            check.setLastCheckedAt(LocalDateTime.now());
+            String partitionSummary = partitioned ? summarizePartitionDrift(sourceMetrics, targetMetrics, tolerance) : null;
+            boolean hasPartitionDrift = partitionSummary != null && !partitionSummary.isBlank();
+            String newState = diff > tolerance || hasPartitionDrift ? "DRIFT" : "OK";
+
+            LambdaUpdateWrapper<ReconciliationCheckEntity> update = new LambdaUpdateWrapper<ReconciliationCheckEntity>()
+                .eq(ReconciliationCheckEntity::getId, check.getId())
+                .set(ReconciliationCheckEntity::getLastCheckedAt, LocalDateTime.now())
+                .set(ReconciliationCheckEntity::getLastState, newState)
+                .set(ReconciliationCheckEntity::getLastError, null)
+                .set(ReconciliationCheckEntity::getPartitionDriftSummary, partitionSummary);
+            if (isAggregate) {
+                update.set(ReconciliationCheckEntity::getLastSourceAggregate, sourceTotal)
+                    .set(ReconciliationCheckEntity::getLastTargetAggregate, targetTotal)
+                    .set(ReconciliationCheckEntity::getLastSourceCount, null)
+                    .set(ReconciliationCheckEntity::getLastTargetCount, null);
+            } else {
+                update.set(ReconciliationCheckEntity::getLastSourceCount, (long) sourceTotal)
+                    .set(ReconciliationCheckEntity::getLastTargetCount, (long) targetTotal)
+                    .set(ReconciliationCheckEntity::getLastSourceAggregate, null)
+                    .set(ReconciliationCheckEntity::getLastTargetAggregate, null);
+            }
+            reconciliationCheckMapper.update(null, update);
             check.setLastState(newState);
-            check.setLastError(null);
-            reconciliationCheckMapper.updateById(check);
 
             String linkUrl = "/realtime/reconciliation";
             RealtimeAlertService.AlertSubject subject = new RealtimeAlertService.AlertSubject(
-                "RECONCILIATION", check.getId(), check.getName(), "ROW_COUNT_DRIFT");
+                "RECONCILIATION", check.getId(), check.getName(), isAggregate ? "AGGREGATE_DRIFT" : "ROW_COUNT_DRIFT");
             if ("DRIFT".equals(newState) && !"DRIFT".equals(previousState)) {
-                alertService.notifyFailure(subject, null, "数据对账异常：" + check.getName(),
-                    String.format(Locale.ROOT, "源表 %d 行，目标 %d 行，差异 %d（容忍 %d）", sourceCount, targetCount, diff, tolerance), linkUrl);
+                String detail = isAggregate
+                    ? String.format(Locale.ROOT, "源聚合值 %.2f，目标聚合值 %.2f，差异 %.2f（容忍 %d）", sourceTotal, targetTotal, diff, tolerance)
+                    : String.format(Locale.ROOT, "源表 %d 行，目标 %d 行，差异 %d（容忍 %d）", (long) sourceTotal, (long) targetTotal, (long) diff, tolerance);
+                if (hasPartitionDrift) {
+                    detail += "；分区差异：" + partitionSummary;
+                }
+                alertService.notifyFailure(subject, null, "数据对账异常：" + check.getName(), detail, linkUrl);
             } else if ("OK".equals(newState) && "DRIFT".equals(previousState)) {
                 alertService.notifyRecovery(subject, null, "数据对账恢复：" + check.getName(), linkUrl);
             }
@@ -117,24 +153,59 @@ public class DataReconciliationService {
         return check;
     }
 
-    private long count(DataSourceEntity dataSource, String database, String tableOrPattern) {
+    /**
+     * Returns a partition-value -> metric map (COUNT(*) or SUM(aggregateColumn)
+     * depending on isAggregate) - a single entry keyed SINGLE_VALUE_KEY when
+     * partitionColumn is blank, one entry per distinct partition value
+     * otherwise.
+     */
+    private Map<String, Double> queryMetric(DataSourceEntity dataSource, String database, String tableOrPattern,
+                                             String aggregateColumn, String partitionColumn, boolean isAggregate) {
         if ("REDIS".equalsIgnoreCase(dataSource.getType())) {
-            return redisConnectionService.countKeysMatching(dataSource, database, tableOrPattern);
+            if (isAggregate || (partitionColumn != null && !partitionColumn.isBlank())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Redis 目标不支持聚合值对账或分区级对账，只能用行数（Key 计数）对账");
+            }
+            return Map.of(SINGLE_VALUE_KEY, (double) redisConnectionService.countKeysMatching(dataSource, database, tableOrPattern));
         }
-        // Admin-configured (realtime:reconciliation:create/update), but
-        // still validated as a bare identifier (optionally schema-qualified
-        // for Oracle) before splicing into SQL text - same defense-in-depth
-        // DataSourceConnectionService.tables()/columns() already apply to
-        // admin-supplied identifiers elsewhere in this codebase, not a
-        // trust boundary unique to this feature.
-        if (!tableOrPattern.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)?")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "非法的表名：" + tableOrPattern);
+        String table = SqlIdentifierValidator.requireValidTableName(tableOrPattern);
+        String selectExpr = isAggregate ? "SUM(" + SqlIdentifierValidator.requireValidColumnName(aggregateColumn, "聚合字段") + ")" : "COUNT(*)";
+        if (partitionColumn == null || partitionColumn.isBlank()) {
+            QueryResult result = dataSourceConnectionService.query(dataSource, database, "SELECT " + selectExpr + " AS metric FROM " + table, 1);
+            return Map.of(SINGLE_VALUE_KEY, result.rows().isEmpty() ? 0.0 : toDouble(result.rows().get(0).get("metric")));
         }
-        QueryResult result = dataSourceConnectionService.query(dataSource, database, "SELECT COUNT(*) AS cnt FROM " + tableOrPattern, 1);
-        if (result.rows().isEmpty()) {
-            return 0L;
+        String partition = SqlIdentifierValidator.requireValidColumnName(partitionColumn, "分区字段");
+        // Capped at 1000 distinct partition values - a partition-level check
+        // is meant for a bounded dimension (a date column, a status enum),
+        // not an arbitrarily high-cardinality one.
+        QueryResult result = dataSourceConnectionService.query(dataSource, database,
+            "SELECT " + partition + " AS part_key, " + selectExpr + " AS metric FROM " + table + " GROUP BY " + partition, 1000);
+        Map<String, Double> byPartition = new java.util.LinkedHashMap<>();
+        for (Map<String, Object> row : result.rows()) {
+            byPartition.put(String.valueOf(row.get("part_key")), toDouble(row.get("metric")));
         }
-        Object value = result.rows().get(0).values().iterator().next();
-        return value == null ? 0L : Long.parseLong(String.valueOf(value));
+        return byPartition;
+    }
+
+    private String summarizePartitionDrift(Map<String, Double> sourceMetrics, Map<String, Double> targetMetrics, int tolerance) {
+        TreeSet<String> allKeys = new TreeSet<>();
+        allKeys.addAll(sourceMetrics.keySet());
+        allKeys.addAll(targetMetrics.keySet());
+        List<String> drifted = new ArrayList<>();
+        for (String key : allKeys) {
+            double sourceValue = sourceMetrics.getOrDefault(key, 0.0);
+            double targetValue = targetMetrics.getOrDefault(key, 0.0);
+            if (Math.abs(sourceValue - targetValue) > tolerance) {
+                drifted.add(String.format(Locale.ROOT, "%s(源%.2f/目标%.2f)", key, sourceValue, targetValue));
+            }
+        }
+        if (drifted.isEmpty()) {
+            return null;
+        }
+        String joined = String.join(", ", drifted);
+        return joined.length() > 950 ? joined.substring(0, 950) + "...(截断)" : joined;
+    }
+
+    private double toDouble(Object value) {
+        return value == null ? 0.0 : Double.parseDouble(String.valueOf(value));
     }
 }

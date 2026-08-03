@@ -73,11 +73,6 @@ body {
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
 }
 
-.realtime-sql-editor textarea {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-}
-
 .ant-table-thead > tr > th {
   white-space: nowrap;
   text-align: center !important;

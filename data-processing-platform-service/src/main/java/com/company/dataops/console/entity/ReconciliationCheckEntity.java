@@ -28,6 +28,17 @@ public class ReconciliationCheckEntity {
     private String targetTable;
     private Integer tolerance;
     private Boolean enabled;
+    // ROW_COUNT (default) or AGGREGATE - see DataReconciliationService. Only
+    // AGGREGATE reads aggregateColumn; both types honor partitionColumn.
+    private String checkType;
+    private String aggregateColumn;
+    // Optional - breaks the comparison into a per-partition-value GROUP BY
+    // instead of one table-wide number, so a drift can be pinned to which
+    // partition/day it's actually in rather than just "somewhere in this table".
+    private String partitionColumn;
+    private Double lastSourceAggregate;
+    private Double lastTargetAggregate;
+    private String partitionDriftSummary;
     private Long lastSourceCount;
     private Long lastTargetCount;
     private LocalDateTime lastCheckedAt;

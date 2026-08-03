@@ -14,6 +14,15 @@ export interface ReconciliationCheckRecord {
   targetTable: string;
   tolerance: number;
   enabled: boolean;
+  /** ROW_COUNT (default) or AGGREGATE - see DataReconciliationService. */
+  checkType?: string;
+  /** Numeric column to SUM and compare - required when checkType is AGGREGATE. */
+  aggregateColumn?: string;
+  /** Optional - breaks the comparison into a per-partition-value GROUP BY instead of one table-wide number. */
+  partitionColumn?: string;
+  lastSourceAggregate?: number;
+  lastTargetAggregate?: number;
+  partitionDriftSummary?: string;
   lastSourceCount?: number;
   lastTargetCount?: number;
   lastCheckedAt?: string;

@@ -40,7 +40,7 @@ public class FlinkSqlJobSubmissionService {
     public String submit(FlinkSqlJobEntity job) {
         List<String> statements = FlinkSqlGatewayClient.splitStatements(job.getSqlScript());
         assertJobShape(statements);
-        capacityInspector.requireCapacity(job.getParallelism() == null ? 1 : job.getParallelism());
+        capacityInspector.requireCapacity(job.getParallelism() == null ? 1 : job.getParallelism(), job.getEnvironment());
 
         String sessionHandle = client.openSession(buildProperties(job));
         try {

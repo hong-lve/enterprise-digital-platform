@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { getMeSilently } from './api/auth';
 import { AppShell } from './components/AppShell';
 import { AlertHistoryPage } from './pages/AlertHistoryPage';
+import { AlertOpsPage } from './pages/AlertOpsPage';
 import { ApprovalCenterPage } from './pages/ApprovalCenterPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { CdcSourcesPage } from './pages/CdcSourcesPage';
@@ -15,6 +16,7 @@ import { FlinkStreamJobsPage } from './pages/FlinkStreamJobsPage';
 import { JarPackagesPage } from './pages/JarPackagesPage';
 import { LineagePage } from './pages/LineagePage';
 import { LoginPage } from './pages/LoginPage';
+import { DataQualityRulesPage } from './pages/DataQualityRulesPage';
 import { RealtimeOverviewPage } from './pages/RealtimeOverviewPage';
 import { RealtimeQueryPage } from './pages/RealtimeQueryPage';
 import { ReconciliationPage } from './pages/ReconciliationPage';
@@ -105,7 +107,9 @@ export default function App() {
         <Route path="realtime/lineage" element={<LineagePage />} />
         <Route path="realtime/sql-jobs" element={<FlinkSqlJobsPage />} />
         <Route path="realtime/alert-history" element={<AlertHistoryPage />} />
+        <Route path="realtime/oncall" element={<AlertOpsPage />} />
         <Route path="realtime/reconciliation" element={<ReconciliationPage />} />
+        <Route path="realtime/data-quality" element={<DataQualityRulesPage />} />
         <Route path="realtime/container-monitoring" element={<ContainerMonitoringPage />} />
         <Route path="system/users" element={<SystemUsersPage />} />
         <Route path="system/roles" element={<SystemRolesPage />} />

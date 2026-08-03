@@ -110,6 +110,27 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!--
+      Tier 3 item 5 of the reliability roadmap ("Testcontainers/Flink-
+      MiniCluster/Kafka-CDC E2E test scaffolding") - *IT.java tests run
+      against real Docker containers (see DataReconciliationServiceIT for the
+      first one), not mocks, catching the class of bug a mocked JDBC/Kafka
+      client never can (real driver quirks, real SQL dialect differences).
+      Kept out of the fast `mvn test` unit suite on purpose - see the
+      maven-failsafe-plugin binding below, which only picks up *IT.java via
+      `mvn verify`. Versions are managed by spring-boot-starter-parent's own
+      imported Testcontainers BOM, so none is pinned here.
+    -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mysql</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <!-- spring-boot-starter-web (Servlet stack) doesn't pull this in by
            default - it's WebFlux territory. But org.springframework.http.
@@ -178,6 +199,17 @@
       <version>2.12.0</version>
     </dependency>
     <dependency>
+      <!-- Same version already used by the sibling data-service-platform-service
+           module (ContractGovernanceService/SqlSecurityPolicy) - parses
+           INSERT INTO ... SELECT ... FROM ... [JOIN ...] to extract
+           column-level lineage (FlinkSqlLineageParser). Flink's CREATE TABLE
+           ... WITH (...) syntax isn't ANSI SQL, so that half is hand-parsed
+           instead (paren-balanced extraction), not delegated to this library. -->
+      <groupId>com.github.jsqlparser</groupId>
+      <artifactId>jsqlparser</artifactId>
+      <version>4.9</version>
+    </dependency>
+    <dependency>
       <!-- Flink JAR storage (JarStorageService) - talks to the MinIO
            container in docker-compose.yml via its S3-compatible API
            (forcePathStyle, since MinIO doesn't do virtual-hosted-style
@@ -227,6 +259,26 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <!--
+        Surefire (mvn test/package) only ever picks up *Test.java by default -
+        *IT.java files are invisible to it, so the existing fast unit suite
+        stays fast. Failsafe picks up *IT.java instead, and only runs on
+        `mvn verify` (or `mvn integration-test`), never on a plain `test`/
+        `package` - real Docker containers are much slower to spin up than
+        the mocked unit tests, so they shouldn't run on every build by default.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

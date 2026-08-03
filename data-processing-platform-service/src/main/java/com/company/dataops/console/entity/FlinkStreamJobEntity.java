@@ -24,6 +24,20 @@ public class FlinkStreamJobEntity {
     private String restartStrategy;
     private Integer restartAttempts;
     private Integer restartDelaySeconds;
+    // Checkpoint governance - see FlinkStreamSubmissionClient.buildFlinkConfiguration()
+    // for how these map to execution.checkpointing.* Flink config keys. All
+    // nullable with server-side defaults applied at config-build time (not
+    // column DEFAULTs read back into the entity), same pattern as
+    // checkpointIntervalMs/restartStrategy above.
+    private Integer checkpointTimeoutMs;
+    private Integer minPauseBetweenCheckpointsMs;
+    private Integer maxConcurrentCheckpoints;
+    private Integer tolerableFailedCheckpoints;
+    private String checkpointingMode;
+    private String externalizedCheckpointRetention;
+    private Boolean unalignedCheckpointsEnabled;
+    private String checkpointFailureAlertState;
+    private Integer savepointRetentionCount;
     private String flinkJobId;
     private String savepointPath;
     private String status;

@@ -1,7 +1,9 @@
-import { DatabaseOutlined, DeleteOutlined, EditOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DatabaseOutlined, DeleteOutlined, EditOutlined, MedicineBoxOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { isPendingApproval } from '../api/approval';
+import { RecoveryDrawer } from '../components/RecoveryDrawer';
+import { SchemaDrawer } from '../components/SchemaDrawer';
 import {
   createCdcSource,
   deleteCdcSource,
@@ -59,6 +61,8 @@ export function CdcSourcesPage() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [form] = Form.useForm<Partial<CdcSourceRecord>>();
   const can = useAuthStore((state) => state.hasPermission);
+  const [recoveryTarget, setRecoveryTarget] = useState<CdcSourceRecord | null>(null);
+  const [schemaTarget, setSchemaTarget] = useState<CdcSourceRecord | null>(null);
 
   const dataSourceById = new Map(cdcDataSources.map((item) => [item.id, item]));
 
@@ -177,7 +181,7 @@ export function CdcSourcesPage() {
           { title: '负责人', dataIndex: 'owner', render: (value?: string) => value || '-' },
           {
             title: '操作',
-            width: 260,
+            width: 400,
             render: (_, record) => {
               // PROD-tagged rows need realtime:env:prod-operate on top of the
               // usual per-action permission - see EnvironmentGuard.java.
@@ -200,6 +204,8 @@ export function CdcSourcesPage() {
                     </Tooltip>
                   )}
                   <Button size="small" icon={<ReloadOutlined />} loading={busyId === record.id} onClick={() => runAction(record.id, refreshCdcSourceStatus, '状态已刷新')}>状态</Button>
+                  <Button size="small" icon={<MedicineBoxOutlined />} onClick={() => setRecoveryTarget(record)}>恢复</Button>
+                  <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setSchemaTarget(record)}>Schema</Button>
                   <Tooltip title={lockedTip}>
                     <Popconfirm title="确定删除这个数据源？" disabled={locked} onConfirm={() => runAction(record.id, deleteCdcSource, '已删除')}>
                       <Button size="small" danger icon={<DeleteOutlined />} disabled={locked}>删除</Button>
@@ -257,6 +263,21 @@ export function CdcSourcesPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RecoveryDrawer
+        entityType="CDC_SOURCE"
+        entityId={recoveryTarget?.id ?? null}
+        entityName={recoveryTarget?.name}
+        canManage={can('realtime:cdc:recovery-manage')}
+        onClose={() => setRecoveryTarget(null)}
+      />
+
+      <SchemaDrawer
+        cdcSourceId={schemaTarget?.id ?? null}
+        cdcSourceName={schemaTarget?.name}
+        canManage={can('realtime:cdc:schema-manage')}
+        onClose={() => setSchemaTarget(null)}
+      />
     </div>
   );
 }

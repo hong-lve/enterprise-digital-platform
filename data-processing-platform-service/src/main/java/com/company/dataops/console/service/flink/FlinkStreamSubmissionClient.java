@@ -2,7 +2,9 @@ package com.company.dataops.console.service.flink;
 
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.service.storage.JarStorageService;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
@@ -47,7 +49,7 @@ public class FlinkStreamSubmissionClient {
         if (job.getJarPath() == null || job.getJarPath().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Flink 流作业必须填写 JAR 路径");
         }
-        capacityInspector.requireCapacity(job.getParallelism() == null ? 1 : job.getParallelism());
+        capacityInspector.requireCapacity(job.getParallelism() == null ? 1 : job.getParallelism(), job.getEnvironment());
         String jarId = uploadJar(job.getJarPath());
         return run(jarId, job);
     }
@@ -108,6 +110,25 @@ public class FlinkStreamSubmissionClient {
         Map<String, String> config = new LinkedHashMap<>();
         int checkpointIntervalMs = job.getCheckpointIntervalMs() == null ? 10000 : job.getCheckpointIntervalMs();
         config.put("execution.checkpointing.interval", checkpointIntervalMs + " ms");
+        // Checkpoint governance knobs - all optional on the entity (nullable
+        // columns, see V33 migration), defaulted here rather than at the DB
+        // level so a job created before this feature existed keeps behaving
+        // exactly like Flink's own out-of-the-box defaults.
+        int checkpointTimeoutMs = job.getCheckpointTimeoutMs() == null ? 600000 : job.getCheckpointTimeoutMs();
+        config.put("execution.checkpointing.timeout", checkpointTimeoutMs + " ms");
+        int minPauseMs = job.getMinPauseBetweenCheckpointsMs() == null ? 0 : job.getMinPauseBetweenCheckpointsMs();
+        config.put("execution.checkpointing.min-pause", minPauseMs + " ms");
+        int maxConcurrent = job.getMaxConcurrentCheckpoints() == null ? 1 : job.getMaxConcurrentCheckpoints();
+        config.put("execution.checkpointing.max-concurrent-checkpoints", String.valueOf(maxConcurrent));
+        int tolerableFailed = job.getTolerableFailedCheckpoints() == null ? 0 : job.getTolerableFailedCheckpoints();
+        config.put("execution.checkpointing.tolerable-failed-checkpoints", String.valueOf(tolerableFailed));
+        String mode = job.getCheckpointingMode() == null || job.getCheckpointingMode().isBlank()
+            ? "EXACTLY_ONCE" : job.getCheckpointingMode();
+        config.put("execution.checkpointing.mode", mode);
+        String externalizedRetention = job.getExternalizedCheckpointRetention() == null || job.getExternalizedCheckpointRetention().isBlank()
+            ? "RETAIN_ON_CANCELLATION" : job.getExternalizedCheckpointRetention();
+        config.put("execution.checkpointing.externalized-checkpoint-retention", externalizedRetention);
+        config.put("execution.checkpointing.unaligned.enabled", String.valueOf(Boolean.TRUE.equals(job.getUnalignedCheckpointsEnabled())));
         if ("FIXED_DELAY".equalsIgnoreCase(job.getRestartStrategy())) {
             int attempts = job.getRestartAttempts() == null ? 3 : job.getRestartAttempts();
             int delaySeconds = job.getRestartDelaySeconds() == null ? 10 : job.getRestartDelaySeconds();
@@ -178,6 +199,120 @@ public class FlinkStreamSubmissionClient {
             case "FINISHED" -> new FlinkJobStatus("FINISHED", "作业已结束（流作业正常不会到这个状态，可能是数据源提前结束）");
             default -> new FlinkJobStatus("RUNNING", "运行中：" + state);
         };
+    }
+
+    /**
+     * GET /v1/jobs/:id/checkpoints - Flink's own bounded (history-size-limited,
+     * default last 10) checkpoint history for a job, source of truth for both
+     * the checkpoint size/duration/failure trend view and the savepoint
+     * inventory (entries where checkpointType is SAVEPOINT/SYNC_SAVEPOINT and
+     * externalPath is set) - see FlinkCheckpointHistoryScheduler, which polls
+     * this and persists it to flink_checkpoint_history since Flink itself
+     * doesn't retain history beyond its own in-memory bound.
+     */
+    public List<CheckpointRecord> checkpointHistory(String flinkJobId) {
+        Map<?, ?> result;
+        try {
+            result = restTemplate.getForObject(baseUrl + "/v1/jobs/" + flinkJobId + "/checkpoints", Map.class);
+        } catch (Exception exception) {
+            return List.of();
+        }
+        Object historyObj = result == null ? null : result.get("history");
+        if (!(historyObj instanceof List<?> history)) {
+            return List.of();
+        }
+        List<CheckpointRecord> records = new ArrayList<>();
+        for (Object entryObj : history) {
+            Map<?, ?> entry = (Map<?, ?>) entryObj;
+            records.add(new CheckpointRecord(
+                toLong(entry.get("id")),
+                String.valueOf(entry.get("status")),
+                String.valueOf(entry.get("checkpoint_type")),
+                toLong(entry.get("trigger_timestamp")),
+                toLong(entry.get("latest_ack_timestamp")),
+                toLong(entry.get("end_to_end_duration")),
+                toLong(entry.get("state_size")),
+                entry.get("external_path") == null ? null : String.valueOf(entry.get("external_path")),
+                entry.get("failure_message") == null ? null : String.valueOf(entry.get("failure_message"))
+            ));
+        }
+        return records;
+    }
+
+    private static Long toLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    public record CheckpointRecord(
+        Long checkpointId,
+        String status,
+        String checkpointType,
+        Long triggerTimestamp,
+        Long latestAckTimestamp,
+        Long endToEndDurationMs,
+        Long stateSizeBytes,
+        String externalPath,
+        String failureMessage
+    ) {
+    }
+
+    /**
+     * POST /v1/savepoint-disposal - same trigger-then-poll async pattern as
+     * stopWithSavepoint() below (Flink's REST API uses this pattern uniformly
+     * for any operation that runs on the JobManager rather than completing
+     * synchronously). Used by FlinkSavepointRetentionScheduler and the manual
+     * "删除保存点" action - deletes the actual file via Flink's own process
+     * (which has filesystem access to state.savepoints.dir), since this
+     * service's JVM doesn't and the savepoint volume isn't host-mounted.
+     */
+    public void disposeSavepoint(String savepointPath) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("savepoint-path", savepointPath);
+
+        Map<?, ?> triggerResult;
+        try {
+            triggerResult = restTemplate.postForObject(baseUrl + "/v1/savepoint-disposal", body, Map.class);
+        } catch (Exception exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "触发保存点删除失败：" + exception.getMessage());
+        }
+        if (triggerResult == null || triggerResult.get("request-id") == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "触发保存点删除失败：无响应");
+        }
+        String triggerId = String.valueOf(triggerResult.get("request-id"));
+
+        for (int attempt = 0; attempt < 30; attempt++) {
+            sleepOneSecond();
+            Map<?, ?> statusResult;
+            try {
+                statusResult = restTemplate.getForObject(baseUrl + "/v1/savepoint-disposal/" + triggerId, Map.class);
+            } catch (Exception exception) {
+                continue;
+            }
+            if (statusResult == null) {
+                continue;
+            }
+            Map<?, ?> status = (Map<?, ?>) statusResult.get("status");
+            String statusId = status == null ? null : String.valueOf(status.get("id"));
+            if ("COMPLETED".equals(statusId)) {
+                Map<?, ?> operation = (Map<?, ?>) statusResult.get("operation");
+                Object failureCause = operation == null ? null : operation.get("failure-cause");
+                if (failureCause != null) {
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "保存点删除失败：" + failureCause);
+                }
+                return;
+            }
+        }
+        throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "等待保存点删除确认超时（30秒）");
     }
 
     /**

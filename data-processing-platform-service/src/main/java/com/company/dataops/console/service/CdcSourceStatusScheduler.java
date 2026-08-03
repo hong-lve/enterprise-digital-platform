@@ -5,8 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.CdcSourceEntity;
 import com.company.dataops.console.mapper.CdcSourceMapper;
 import com.company.dataops.console.service.kafka.CdcLagInspector;
-import com.company.dataops.console.service.kafka.CdcRecoveryTracker;
 import com.company.dataops.console.service.kafka.KafkaConnectClient;
+import com.company.dataops.console.service.recovery.RecoveryOrchestrator;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +34,7 @@ public class CdcSourceStatusScheduler {
     private final CdcSourceMapper cdcSourceMapper;
     private final KafkaConnectClient kafkaConnectClient;
     private final CdcLagInspector cdcLagInspector;
-    private final CdcRecoveryTracker cdcRecoveryTracker;
+    private final RecoveryOrchestrator recoveryOrchestrator;
     private final RealtimeAlertService realtimeAlertService;
     private final String frontendUrl;
 
@@ -42,14 +42,14 @@ public class CdcSourceStatusScheduler {
         CdcSourceMapper cdcSourceMapper,
         KafkaConnectClient kafkaConnectClient,
         CdcLagInspector cdcLagInspector,
-        CdcRecoveryTracker cdcRecoveryTracker,
+        RecoveryOrchestrator recoveryOrchestrator,
         RealtimeAlertService realtimeAlertService,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.cdcSourceMapper = cdcSourceMapper;
         this.kafkaConnectClient = kafkaConnectClient;
         this.cdcLagInspector = cdcLagInspector;
-        this.cdcRecoveryTracker = cdcRecoveryTracker;
+        this.recoveryOrchestrator = recoveryOrchestrator;
         this.realtimeAlertService = realtimeAlertService;
         this.frontendUrl = frontendUrl;
     }
@@ -87,6 +87,9 @@ public class CdcSourceStatusScheduler {
                 source.setStatus(status.state());
                 source.setLastError(status.message());
                 if ("FAILED".equals(status.state())) {
+                    if (!wasFailed) {
+                        recoveryOrchestrator.recordFailureDetected("CDC_SOURCE", source.getId(), source.getName(), source.getLastError());
+                    }
                     if (!"ALERTING".equals(source.getAlertState())) {
                         realtimeAlertService.notifyFailure(
                             new RealtimeAlertService.AlertSubject("CDC_SOURCE", source.getId(), source.getName(), "CONNECTOR_FAILURE"),
@@ -108,7 +111,7 @@ public class CdcSourceStatusScheduler {
                 // attempt worked. This transition was never detected before -
                 // a failed source used to drop out of the query above and
                 // nothing ever looked at it again.
-                cdcRecoveryTracker.forget(source.getId());
+                recoveryOrchestrator.recordRecovered("CDC_SOURCE", source.getId(), source.getName());
                 if ("ALERTING".equals(source.getAlertState())) {
                     realtimeAlertService.notifyRecovery(
                         new RealtimeAlertService.AlertSubject("CDC_SOURCE", source.getId(), source.getName(), "CONNECTOR_FAILURE"),
@@ -139,17 +142,18 @@ public class CdcSourceStatusScheduler {
      * attempts via CdcRecoveryTracker, not a blind infinite retry loop.
      */
     private void attemptRecovery(CdcSourceEntity source) {
-        if (cdcRecoveryTracker.shouldAttempt(source.getId())) {
-            cdcRecoveryTracker.recordAttempt(source.getId());
+        if (recoveryOrchestrator.shouldAttempt("CDC_SOURCE", source.getId())) {
+            recoveryOrchestrator.recordAttempt("CDC_SOURCE", source.getId(), source.getName());
             try {
                 kafkaConnectClient.restart(source.getConnectorName());
             } catch (Exception exception) {
                 LOGGER.warn("Best-effort restart failed for CDC source {} ({}): {}", source.getId(), source.getConnectorName(), exception.getMessage());
             }
         }
-        if (cdcRecoveryTracker.exhausted(source.getId())) {
-            source.setLastError(source.getLastError() + "\n已达到最大自动恢复次数（" + cdcRecoveryTracker.attemptCount(source.getId()) + " 次），需要人工处理");
-        }
+        // Whether this call just tripped the circuit or it was already
+        // tripped from an earlier poll, "needs manual intervention" is
+        // communicated via recovery_state (see the recovery drawer), not by
+        // growing lastError with a repeated suffix every 15s poll tick.
     }
 
     // Same null-skip pitfall CdcSourceController.start()/refreshStatus() already

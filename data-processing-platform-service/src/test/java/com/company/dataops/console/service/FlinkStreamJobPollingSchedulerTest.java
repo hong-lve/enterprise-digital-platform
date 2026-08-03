@@ -17,6 +17,7 @@ import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.service.flink.FlinkBackpressureInspector;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
 import com.company.dataops.console.service.kafka.KafkaConsumerLagInspector;
+import com.company.dataops.console.service.recovery.RecoveryOrchestrator;
 import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
@@ -58,10 +59,11 @@ class FlinkStreamJobPollingSchedulerTest {
         FlinkBackpressureInspector flinkBackpressureInspector = mock(FlinkBackpressureInspector.class);
         KafkaConsumerLagInspector kafkaConsumerLagInspector = mock(KafkaConsumerLagInspector.class);
         RealtimeAlertService realtimeAlertService = mock(RealtimeAlertService.class);
+        RecoveryOrchestrator recoveryOrchestrator = mock(RecoveryOrchestrator.class);
 
         scheduler = new FlinkStreamJobPollingScheduler(
             flinkStreamJobMapper, flinkStreamSubmissionClient, flinkBackpressureInspector,
-            kafkaConsumerLagInspector, realtimeAlertService, "http://frontend", 0.5, 500L);
+            kafkaConsumerLagInspector, realtimeAlertService, recoveryOrchestrator, "http://frontend", 0.5, 500L);
     }
 
     @Test

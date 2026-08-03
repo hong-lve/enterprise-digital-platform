@@ -33,10 +33,40 @@ export interface LineageView {
   orphanFlinkJobs: FlinkJobLineage[];
 }
 
+export interface SqlSourceColumnRef {
+  table?: string;
+  column: string;
+}
+
+export interface SqlColumnLineage {
+  targetColumn: string;
+  sourceColumns: SqlSourceColumnRef[];
+  expression: string;
+}
+
+export interface SqlTableLineage {
+  tableName: string;
+  connectorType: string;
+  physicalLocation: string;
+  columns: string[];
+}
+
+export interface SqlLineageResult {
+  tables: SqlTableLineage[];
+  targetTable?: string;
+  columnLineages: SqlColumnLineage[];
+  warnings: string[];
+}
+
 function unwrap<T>(response: { data: ApiResponse<T> }) {
   return response.data.data;
 }
 
 export function getLineage() {
   return http.get<ApiResponse<LineageView>>('/realtime/lineage').then(unwrap);
+}
+
+/** Parses a SQL job's own CREATE TABLE/INSERT INTO statements on demand - see FlinkSqlLineageParser.java. */
+export function fetchSqlJobColumnLineage(id: number) {
+  return http.get<ApiResponse<SqlLineageResult>>(`/realtime/lineage/sql-jobs/${id}/columns`).then(unwrap);
 }

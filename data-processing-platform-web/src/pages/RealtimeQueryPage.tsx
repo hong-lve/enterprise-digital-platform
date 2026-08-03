@@ -1,5 +1,6 @@
 import { CaretRightOutlined, FileSearchOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
 import { Alert, Button, Card, Empty, Input, List, Select, Space, Table, Tag, Typography, message } from 'antd';
+import Editor from '@monaco-editor/react';
 import { useEffect, useRef, useState } from 'react';
 import { listDataSourceDatabases, pageDataSources, type DataSourceRecord } from '../api/dataSources';
 import { executeRealtimeQuery, getRedisValue, listRealtimeTables, listRedisKeys, type QueryResult, type RedisKeyInfo, type TableInfo } from '../api/realtimeQuery';
@@ -266,13 +267,21 @@ export function RealtimeQueryPage() {
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card size="small">
-            <Input.TextArea
-              className="realtime-sql-editor"
-              rows={12}
-              value={sql}
-              onChange={(event) => setSql(event.target.value)}
-              placeholder={isRedis ? 'GET user:1' : 'SELECT * FROM your_table LIMIT 100'}
-            />
+            {/* No Redis language mode in Monaco, so it falls back to
+                plaintext there rather than mislabeling GET/HGETALL/... as SQL. */}
+            <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+              <Editor
+                height="320px"
+                language={isRedis ? 'plaintext' : 'sql'}
+                value={sql}
+                onChange={(value) => setSql(value ?? '')}
+                // automaticLayout alone doesn't correct the *initial*
+                // measurement on a plain (non-modal) page - see the
+                // identical comment in FlinkSqlPage.tsx.
+                onMount={(editor) => editor.layout()}
+                options={{ minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+              />
+            </div>
             <Space style={{ marginTop: 12 }}>
               <Button type="primary" icon={<CaretRightOutlined />} loading={running} onClick={runQuery}>执行</Button>
             </Space>

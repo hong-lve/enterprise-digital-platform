@@ -17,6 +17,9 @@ import com.company.dataops.console.mapper.AlertHistoryMapper;
 import com.company.dataops.console.mapper.MessageMapper;
 import com.company.dataops.console.mapper.MessageReceiverMapper;
 import com.company.dataops.console.mapper.UserMapper;
+import com.company.dataops.console.service.alerting.AlertRetryQueueService;
+import com.company.dataops.console.service.alerting.AlertSilenceService;
+import com.company.dataops.console.service.alerting.OnCallService;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +46,9 @@ class RealtimeAlertServiceTest {
         webhookAlertSender = mock(WebhookAlertSender.class);
         UserMapper userMapper = mock(UserMapper.class);
         AlertHistoryMapper alertHistoryMapper = mock(AlertHistoryMapper.class);
+        AlertSilenceService alertSilenceService = mock(AlertSilenceService.class);
+        OnCallService onCallService = mock(OnCallService.class);
+        AlertRetryQueueService alertRetryQueueService = mock(AlertRetryQueueService.class);
 
         AtomicLong nextId = new AtomicLong(100);
         doAnswer(invocation -> {
@@ -51,7 +57,9 @@ class RealtimeAlertServiceTest {
             return 1;
         }).when(messageMapper).insert(any(MessageEntity.class));
 
-        service = new RealtimeAlertService(messageMapper, messageReceiverMapper, userMapper, webhookAlertSender, alertHistoryMapper);
+        service = new RealtimeAlertService(
+            messageMapper, messageReceiverMapper, userMapper, webhookAlertSender, alertHistoryMapper,
+            alertSilenceService, onCallService, alertRetryQueueService);
     }
 
     @Test

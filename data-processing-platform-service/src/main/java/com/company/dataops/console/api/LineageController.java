@@ -7,13 +7,17 @@ import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.mapper.CdcSourceMapper;
 import com.company.dataops.console.mapper.FlinkSqlJobMapper;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
+import com.company.dataops.console.service.lineage.FlinkSqlLineageParser;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Real-time-only lineage: MySQL table (CDC source) -> Kafka topic -> Flink
@@ -47,11 +51,35 @@ public class LineageController {
     private final CdcSourceMapper cdcSourceMapper;
     private final FlinkStreamJobMapper flinkStreamJobMapper;
     private final FlinkSqlJobMapper flinkSqlJobMapper;
+    private final FlinkSqlLineageParser flinkSqlLineageParser;
 
-    public LineageController(CdcSourceMapper cdcSourceMapper, FlinkStreamJobMapper flinkStreamJobMapper, FlinkSqlJobMapper flinkSqlJobMapper) {
+    public LineageController(
+        CdcSourceMapper cdcSourceMapper,
+        FlinkStreamJobMapper flinkStreamJobMapper,
+        FlinkSqlJobMapper flinkSqlJobMapper,
+        FlinkSqlLineageParser flinkSqlLineageParser
+    ) {
         this.cdcSourceMapper = cdcSourceMapper;
         this.flinkStreamJobMapper = flinkStreamJobMapper;
         this.flinkSqlJobMapper = flinkSqlJobMapper;
+        this.flinkSqlLineageParser = flinkSqlLineageParser;
+    }
+
+    /**
+     * Column-level lineage (tier 2 item 3 of the reliability roadmap) - parses
+     * the job's own sqlScript on demand rather than the hand-filled
+     * kafkaTopics/*SinkTables fields the rest of this controller relies on.
+     * No new table/migration: re-parsing on each request is cheap (the
+     * script is already stored), so there's nothing worth caching.
+     */
+    @GetMapping("/sql-jobs/{id}/columns")
+    @PreAuthorize("hasAuthority('realtime:lineage:view')")
+    public ApiResponse<FlinkSqlLineageParser.SqlLineageResult> sqlJobColumnLineage(@PathVariable Long id) {
+        FlinkSqlJobEntity job = flinkSqlJobMapper.selectById(id);
+        if (job == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "SQL 流作业不存在");
+        }
+        return ApiResponse.ok(flinkSqlLineageParser.parse(job.getSqlScript()));
     }
 
     @GetMapping

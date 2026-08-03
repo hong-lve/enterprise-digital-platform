@@ -6,13 +6,23 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.common.PageResult;
+import com.company.dataops.console.entity.FlinkCheckpointHistoryEntity;
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
+import com.company.dataops.console.entity.JobVersionSnapshotEntity;
+import com.company.dataops.console.mapper.FlinkCheckpointHistoryMapper;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.RealtimeAlertService;
 import com.company.dataops.console.service.approval.ChangeApprovalService;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
+import com.company.dataops.console.service.recovery.RecoveryOrchestrator;
+import com.company.dataops.console.service.versioning.JobVersionSnapshotService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import java.time.LocalDateTime;
+import java.util.List;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -31,29 +41,45 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/realtime/flink-jobs")
 public class FlinkStreamJobController {
     private final FlinkStreamJobMapper flinkStreamJobMapper;
+    private final FlinkCheckpointHistoryMapper flinkCheckpointHistoryMapper;
     private final FlinkStreamSubmissionClient flinkStreamSubmissionClient;
     private final RealtimeAlertService realtimeAlertService;
     private final EnvironmentGuard environmentGuard;
+    private final RecoveryOrchestrator recoveryOrchestrator;
     private final ChangeApprovalService changeApprovalService;
+    private final JobVersionSnapshotService jobVersionSnapshotService;
+    private final ObjectMapper objectMapper;
     private final String frontendUrl;
 
     public FlinkStreamJobController(
         FlinkStreamJobMapper flinkStreamJobMapper,
+        FlinkCheckpointHistoryMapper flinkCheckpointHistoryMapper,
         FlinkStreamSubmissionClient flinkStreamSubmissionClient,
         RealtimeAlertService realtimeAlertService,
         EnvironmentGuard environmentGuard,
+        RecoveryOrchestrator recoveryOrchestrator,
         ChangeApprovalService changeApprovalService,
+        JobVersionSnapshotService jobVersionSnapshotService,
+        ObjectMapper objectMapper,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.flinkStreamJobMapper = flinkStreamJobMapper;
+        this.flinkCheckpointHistoryMapper = flinkCheckpointHistoryMapper;
         this.flinkStreamSubmissionClient = flinkStreamSubmissionClient;
         this.realtimeAlertService = realtimeAlertService;
         this.environmentGuard = environmentGuard;
+        this.recoveryOrchestrator = recoveryOrchestrator;
         this.changeApprovalService = changeApprovalService;
+        this.jobVersionSnapshotService = jobVersionSnapshotService;
+        this.objectMapper = objectMapper;
         this.frontendUrl = frontendUrl;
         changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_STREAM_JOB_DELETE, this::applyDelete);
         changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_STREAM_JOB_STOP, this::applyStop);
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.FLINK_STREAM_JOB_UPGRADE, this::applyUpgrade);
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.FLINK_STREAM_JOB_ROLLBACK, this::applyRollback);
     }
+
+    private static final String ENTITY_TYPE = "FLINK_STREAM_JOB";
 
     @GetMapping
     @PreAuthorize("hasAuthority('realtime:flink:view')")
@@ -81,6 +107,7 @@ public class FlinkStreamJobController {
         job.setSavepointPath(null);
         job.setLastError(null);
         flinkStreamJobMapper.insert(job);
+        jobVersionSnapshotService.recordVersion(ENTITY_TYPE, job.getId(), buildConfigSnapshot(job), null, null, "创建", null);
         return ApiResponse.ok(job);
     }
 
@@ -99,7 +126,100 @@ public class FlinkStreamJobController {
         job.setSavepointPath(null);
         job.setLastError(null);
         flinkStreamJobMapper.updateById(job);
+        jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(job), null, null, "编辑保存", null);
         return ApiResponse.ok();
+    }
+
+    /**
+     * Scaled-down equivalent of the reliability roadmap's "Savepoint Upgrade
+     * Mode" (normally a Flink Kubernetes Operator feature - see
+     * [[project_reliability_hardening_roadmap]]'s note on why this project
+     * stayed on the shared standalone cluster instead of a second local K8s
+     * cluster). Unlike update() above, which just rewrites the DB row and
+     * leaves whatever's actually running on the cluster untouched until the
+     * next manual stop/start, this applies a new definition to an
+     * *already-running* job as one guarded action: stop-with-savepoint the
+     * old instance, save the new definition, resume from that exact
+     * savepoint under the new config. Only meaningful for a RUNNING job -
+     * anything else should just use the plain update() endpoint.
+     */
+    @PostMapping("/{id}/upgrade")
+    @PreAuthorize("hasAuthority('realtime:flink:update')")
+    public ApiResponse<ActionResult> upgrade(@PathVariable Long id, @Valid @RequestBody FlinkStreamJobEntity newDefinition) {
+        FlinkStreamJobEntity existing = requireJob(id);
+        environmentGuard.requirePermissionForEnvironment(existing.getEnvironment());
+        environmentGuard.requirePermissionForEnvironment(newDefinition.getEnvironment());
+        if (!"RUNNING".equals(existing.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "只有运行中的作业才需要滚动升级，未运行的作业请直接编辑保存");
+        }
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(newDefinition);
+        } catch (JsonProcessingException exception) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "序列化升级内容失败：" + exception.getMessage());
+        }
+        ChangeApprovalService.GateResult gate = changeApprovalService.gateWithPayload(
+            ChangeApprovalService.ActionType.FLINK_STREAM_JOB_UPGRADE, id, existing.getEnvironment(), payload, "Flink 流作业滚动升级: " + existing.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyUpgrade(id, payload);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyUpgrade(Long id, String payload) {
+        FlinkStreamJobEntity newDefinition;
+        try {
+            newDefinition = objectMapper.readValue(payload, FlinkStreamJobEntity.class);
+        } catch (JsonProcessingException exception) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "解析升级内容失败：" + exception.getMessage());
+        }
+        FlinkStreamJobEntity existing = requireJob(id);
+        // Save the new definition first (everything except the runtime
+        // fields below) so it's recorded even if the stop/resume dance
+        // fails partway - a failed upgrade shouldn't lose the edit itself.
+        newDefinition.setId(id);
+        newDefinition.setStatus(null);
+        newDefinition.setFlinkJobId(null);
+        newDefinition.setSavepointPath(null);
+        newDefinition.setLastError(null);
+        flinkStreamJobMapper.updateById(newDefinition);
+
+        String savepointPath;
+        try {
+            savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(existing.getFlinkJobId());
+        } catch (Exception exception) {
+            flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                .eq(FlinkStreamJobEntity::getId, id)
+                .set(FlinkStreamJobEntity::getStatus, "FAILED")
+                .set(FlinkStreamJobEntity::getLastError, "滚动升级失败：无法触发保存点停止（" + exception.getMessage() + "），旧实例可能仍在运行，请人工检查"));
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(newDefinition), null, null, "滚动升级失败：无法停止旧实例", null);
+            return;
+        }
+
+        FlinkStreamJobEntity toSubmit = requireJob(id); // reload - now has the freshly-saved new definition
+        toSubmit.setSavepointPath(savepointPath);
+        try {
+            String flinkJobId = flinkStreamSubmissionClient.submit(toSubmit);
+            flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                .eq(FlinkStreamJobEntity::getId, id)
+                .set(FlinkStreamJobEntity::getFlinkJobId, flinkJobId)
+                .set(FlinkStreamJobEntity::getStatus, "RUNNING")
+                .set(FlinkStreamJobEntity::getSavepointPath, savepointPath)
+                .set(FlinkStreamJobEntity::getLastError, null));
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), savepointPath, flinkJobId, "滚动升级", null);
+        } catch (Exception exception) {
+            // The old instance is already stopped - can't un-stop it - but the
+            // savepoint it left behind is safe, so a human can manually 启动
+            // once the new definition's actual problem (bad jar path, wrong
+            // entry class, insufficient capacity) is fixed.
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), savepointPath, null, "滚动升级失败：新配置启动失败，保存点已保留", null);
+            flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                .eq(FlinkStreamJobEntity::getId, id)
+                .set(FlinkStreamJobEntity::getStatus, "FAILED")
+                .set(FlinkStreamJobEntity::getSavepointPath, savepointPath)
+                .set(FlinkStreamJobEntity::getLastError, "滚动升级失败：新配置启动失败（" + exception.getMessage() + "），保存点已保留在 " + savepointPath + "，可以人工使用该保存点手动启动"));
+        }
     }
 
     @DeleteMapping("/{id}")
@@ -148,6 +268,7 @@ public class FlinkStreamJobController {
                     .set(FlinkStreamJobEntity::getStatus, "RUNNING")
                     .set(FlinkStreamJobEntity::getLastError, null));
             }
+            recoveryOrchestrator.recordRecovered("FLINK_JOB", job.getId(), job.getName());
             return ApiResponse.ok(job);
         }
         try {
@@ -164,9 +285,16 @@ public class FlinkStreamJobController {
                 );
                 job.setAlertState("OK");
             }
+            recordRestoreOutcome(job, "VERIFIED");
+            // A manual (re)start doesn't go through FlinkStreamJobPollingScheduler's
+            // own FAILED->RUNNING detection, so its recovery state wouldn't
+            // otherwise be cleared - a later, unrelated failure would be
+            // wrongly treated as still mid-incident (wrong tier/circuit state).
+            recoveryOrchestrator.recordRecovered("FLINK_JOB", job.getId(), job.getName());
         } catch (ResponseStatusException exception) {
             job.setStatus("FAILED");
             job.setLastError(exception.getReason());
+            recordRestoreOutcome(job, "FAILED");
         }
         // updateById() silently skips null fields (MyBatis-Plus's default
         // NOT_NULL update strategy) - fine for update()'s "don't touch
@@ -207,6 +335,10 @@ public class FlinkStreamJobController {
         String savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
         job.setStatus("CANCELED");
         job.setSavepointPath(savepointPath);
+        // Intentional non-failure state - don't leave a stale recovery-attempt
+        // count hanging around for it, but don't log it as "RECOVERED" either
+        // since nothing was actually recovered.
+        recoveryOrchestrator.reset("FLINK_JOB", job.getId(), job.getName(), "手动停止，清除恢复状态");
         // Targeted update, not updateById(job) - stopWithSavepoint() is a slow
         // network call, so job is a stale snapshot from requireJob() by the
         // time we write. Same lost-update risk as start()/the poller: a
@@ -261,6 +393,149 @@ public class FlinkStreamJobController {
             .set(FlinkStreamJobEntity::getStatus, job.getStatus())
             .set(FlinkStreamJobEntity::getLastError, job.getLastError()));
         return ApiResponse.ok(job);
+    }
+
+    // Item 1 of the reliability roadmap's "recovery verification": rather
+    // than synthetically testing a savepoint against a throwaway job (risky
+    // against real production Kafka topics/sinks for no real benefit), this
+    // records what actually happened the one time it matters - a real
+    // resume attempt via this exact endpoint. Best-effort: if
+    // FlinkCheckpointHistoryScheduler hasn't synced this savepoint into
+    // flink_checkpoint_history yet (or it's blank - a fresh, not resumed,
+    // start), there's nothing to annotate.
+    private void recordRestoreOutcome(FlinkStreamJobEntity job, String outcome) {
+        if (job.getSavepointPath() == null || job.getSavepointPath().isBlank()) {
+            return;
+        }
+        FlinkCheckpointHistoryEntity entry = flinkCheckpointHistoryMapper.selectOne(new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
+            .eq(FlinkCheckpointHistoryEntity::getJobId, job.getId())
+            .eq(FlinkCheckpointHistoryEntity::getExternalPath, job.getSavepointPath()));
+        if (entry == null) {
+            return;
+        }
+        entry.setRestoreOutcome(outcome);
+        entry.setRestoreCheckedAt(LocalDateTime.now());
+        flinkCheckpointHistoryMapper.updateById(entry);
+    }
+
+    @GetMapping("/{id}/checkpoints")
+    @PreAuthorize("hasAuthority('realtime:flink:view')")
+    public ApiResponse<List<FlinkCheckpointHistoryEntity>> checkpoints(@PathVariable Long id) {
+        requireJob(id);
+        return ApiResponse.ok(flinkCheckpointHistoryMapper.selectList(new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
+            .eq(FlinkCheckpointHistoryEntity::getJobId, id)
+            .orderByDesc(FlinkCheckpointHistoryEntity::getTriggerTimestamp)));
+    }
+
+    @PostMapping("/{id}/checkpoints/{checkpointId}/dispose")
+    @PreAuthorize("hasAuthority('realtime:flink:checkpoint-manage')")
+    public ApiResponse<Void> disposeCheckpoint(@PathVariable Long id, @PathVariable Long checkpointId) {
+        FlinkStreamJobEntity job = requireJob(id);
+        environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
+        FlinkCheckpointHistoryEntity entry = flinkCheckpointHistoryMapper.selectOne(new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
+            .eq(FlinkCheckpointHistoryEntity::getJobId, id)
+            .eq(FlinkCheckpointHistoryEntity::getCheckpointId, checkpointId));
+        if (entry == null || entry.getExternalPath() == null || entry.getExternalPath().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有可删除的保存点文件");
+        }
+        if (entry.getExternalPath().equals(job.getSavepointPath())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "这是作业当前恢复点，不能删除");
+        }
+        flinkStreamSubmissionClient.disposeSavepoint(entry.getExternalPath());
+        entry.setDisposed(true);
+        flinkCheckpointHistoryMapper.updateById(entry);
+        return ApiResponse.ok();
+    }
+
+    /**
+     * "快速回滚": redeploys an earlier recorded version's exact config,
+     * resuming from *that version's own* recorded savepoint (not wherever
+     * the about-to-be-abandoned current run left off) - simplest, safest
+     * rollback semantic since it doesn't assume the abandoned run's state is
+     * still compatible with the older config. See JobVersionSnapshotService.
+     */
+    @PostMapping("/{id}/rollback/{versionNo}")
+    @PreAuthorize("hasAuthority('realtime:flink:update')")
+    public ApiResponse<ActionResult> rollback(@PathVariable Long id, @PathVariable Integer versionNo) {
+        FlinkStreamJobEntity existing = requireJob(id);
+        environmentGuard.requirePermissionForEnvironment(existing.getEnvironment());
+        jobVersionSnapshotService.requireVersion(ENTITY_TYPE, id, versionNo); // 404s early if the version doesn't exist
+        String payload = String.valueOf(versionNo);
+        ChangeApprovalService.GateResult gate = changeApprovalService.gateWithPayload(
+            ChangeApprovalService.ActionType.FLINK_STREAM_JOB_ROLLBACK, id, existing.getEnvironment(), payload, "Flink 流作业回滚至版本 " + versionNo + ": " + existing.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyRollback(id, payload);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyRollback(Long id, String payload) {
+        int versionNo = Integer.parseInt(payload);
+        FlinkStreamJobEntity existing = requireJob(id);
+        JobVersionSnapshotEntity target = jobVersionSnapshotService.requireVersion(ENTITY_TYPE, id, versionNo);
+        FlinkStreamJobEntity targetConfig = jobVersionSnapshotService.readConfig(target, FlinkStreamJobEntity.class);
+        targetConfig.setId(id);
+        targetConfig.setStatus(null);
+        targetConfig.setFlinkJobId(null);
+        targetConfig.setSavepointPath(null);
+        targetConfig.setLastError(null);
+        flinkStreamJobMapper.updateById(targetConfig);
+
+        if ("RUNNING".equals(existing.getStatus()) && existing.getFlinkJobId() != null) {
+            try {
+                // Deliberately discarded - rolling back means going back to
+                // version N's own resume point, not preserving whatever
+                // state the about-to-be-abandoned run had.
+                flinkStreamSubmissionClient.stopWithSavepoint(existing.getFlinkJobId());
+            } catch (Exception exception) {
+                flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                    .eq(FlinkStreamJobEntity::getId, id)
+                    .set(FlinkStreamJobEntity::getStatus, "FAILED")
+                    .set(FlinkStreamJobEntity::getLastError, "回滚失败：无法停止当前运行实例（" + exception.getMessage() + "），请人工检查"));
+                return;
+            }
+        }
+
+        FlinkStreamJobEntity toSubmit = requireJob(id); // reload - now has version N's config
+        toSubmit.setSavepointPath(target.getSavepointPath());
+        try {
+            String flinkJobId = flinkStreamSubmissionClient.submit(toSubmit);
+            flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                .eq(FlinkStreamJobEntity::getId, id)
+                .set(FlinkStreamJobEntity::getFlinkJobId, flinkJobId)
+                .set(FlinkStreamJobEntity::getStatus, "RUNNING")
+                .set(FlinkStreamJobEntity::getSavepointPath, target.getSavepointPath())
+                .set(FlinkStreamJobEntity::getLastError, null));
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), flinkJobId, "回滚至版本 " + versionNo, versionNo);
+        } catch (Exception exception) {
+            flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                .eq(FlinkStreamJobEntity::getId, id)
+                .set(FlinkStreamJobEntity::getStatus, "FAILED")
+                .set(FlinkStreamJobEntity::getSavepointPath, target.getSavepointPath())
+                .set(FlinkStreamJobEntity::getLastError, "回滚失败：版本 " + versionNo + " 的配置启动失败（" + exception.getMessage() + "）"));
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), null, "回滚至版本 " + versionNo + "（部署失败）", versionNo);
+        }
+    }
+
+    /** Config-only copy for diffing/rollback - nulls out everything that's a runtime fact rather than part of the definition. */
+    private FlinkStreamJobEntity buildConfigSnapshot(FlinkStreamJobEntity job) {
+        FlinkStreamJobEntity copy = new FlinkStreamJobEntity();
+        BeanUtils.copyProperties(job, copy);
+        copy.setId(null);
+        copy.setFlinkJobId(null);
+        copy.setSavepointPath(null);
+        copy.setStatus(null);
+        copy.setLastError(null);
+        copy.setAlertState(null);
+        copy.setBackpressureRatio(null);
+        copy.setBackpressureAlertState(null);
+        copy.setConsumerLagRecords(null);
+        copy.setConsumerLagAlertState(null);
+        copy.setCheckpointFailureAlertState(null);
+        copy.setCreatedAt(null);
+        copy.setUpdatedAt(null);
+        return copy;
     }
 
     private FlinkStreamJobEntity requireJob(Long id) {

@@ -57,6 +57,9 @@ public class ReconciliationController {
         if (request.getTolerance() == null) {
             request.setTolerance(0);
         }
+        if (request.getCheckType() == null || request.getCheckType().isBlank()) {
+            request.setCheckType("ROW_COUNT");
+        }
         request.setLastState("OK");
         reconciliationCheckMapper.insert(request);
         return ApiResponse.ok(request);
@@ -69,6 +72,9 @@ public class ReconciliationController {
         request.setId(id);
         request.setLastSourceCount(existing.getLastSourceCount());
         request.setLastTargetCount(existing.getLastTargetCount());
+        request.setLastSourceAggregate(existing.getLastSourceAggregate());
+        request.setLastTargetAggregate(existing.getLastTargetAggregate());
+        request.setPartitionDriftSummary(existing.getPartitionDriftSummary());
         request.setLastCheckedAt(existing.getLastCheckedAt());
         request.setLastState(existing.getLastState());
         request.setLastError(existing.getLastError());
@@ -77,6 +83,9 @@ public class ReconciliationController {
         }
         if (request.getTolerance() == null) {
             request.setTolerance(existing.getTolerance());
+        }
+        if (request.getCheckType() == null || request.getCheckType().isBlank()) {
+            request.setCheckType(existing.getCheckType());
         }
         reconciliationCheckMapper.updateById(request);
         return ApiResponse.ok(request);

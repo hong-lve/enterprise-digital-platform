@@ -34,10 +34,16 @@ public class WebhookAlertSender {
         this.webhookUrl = webhookUrl;
     }
 
-    /** Never throws - same best-effort contract as RealtimeAlertService.send(). */
-    public void send(String title, String content, String type, String linkUrl) {
+    /**
+     * Never throws - same best-effort contract as RealtimeAlertService.send().
+     * Returns whether delivery actually succeeded (or wasn't attempted
+     * because no webhook is configured, which isn't a failure worth
+     * retrying) - the caller (RealtimeAlertService) enqueues a retry via
+     * AlertRetryQueueService when this comes back false.
+     */
+    public boolean send(String title, String content, String type, String linkUrl) {
         if (webhookUrl == null || webhookUrl.isBlank()) {
-            return;
+            return true;
         }
         try {
             String prefix = "RECOVERY".equals(type) ? "【恢复】" : "【告警】";
@@ -54,8 +60,10 @@ public class WebhookAlertSender {
             body.put("msgtype", "text");
             body.put("text", textBody);
             restTemplate.postForObject(webhookUrl, body, Map.class);
+            return true;
         } catch (Exception exception) {
             LOGGER.warn("Failed to deliver {} webhook alert '{}': {}", type, title, exception.getMessage());
+            return false;
         }
     }
 }

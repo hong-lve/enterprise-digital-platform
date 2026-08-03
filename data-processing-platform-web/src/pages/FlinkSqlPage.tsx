@@ -1,5 +1,6 @@
 import { CaretRightOutlined, CodeOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Empty, Input, Space, Table, Typography, message } from 'antd';
+import { Alert, Button, Card, Empty, Space, Table, Typography, message } from 'antd';
+import Editor from '@monaco-editor/react';
 import { useState } from 'react';
 import { executeFlinkSql, type FlinkSqlResult } from '../api/flinkSql';
 
@@ -49,12 +50,23 @@ export function FlinkSqlPage() {
       </Typography.Paragraph>
 
       <Card size="small">
-        <Input.TextArea
-          className="realtime-sql-editor"
-          rows={14}
-          value={sql}
-          onChange={(event) => setSql(event.target.value)}
-        />
+        <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+          <Editor
+            height="380px"
+            language="sql"
+            value={sql}
+            onChange={(value) => setSql(value ?? '')}
+            // automaticLayout's ResizeObserver only catches size changes
+            // *after* mount - confirmed live it does not by itself correct
+            // the initial measurement, which on this (modal-free, no
+            // open-animation) page still lands the editor at a stale 5x5px
+            // box same as the JAR/SQL-job modals used to. Those work because
+            // they still call editor.layout() once from onMount; this page
+            // needs the same explicit nudge.
+            onMount={(editor) => editor.layout()}
+            options={{ minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+          />
+        </div>
         <Space style={{ marginTop: 12 }}>
           <Button type="primary" icon={<CaretRightOutlined />} loading={running} onClick={runQuery}>执行</Button>
         </Space>

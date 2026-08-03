@@ -89,12 +89,17 @@ logging:
     name: ${LOG_FILE:./logs/data-processing-platform-service.log}
 
 platform:
-  # Local-dev-only default - any real deployment must override this via the
-  # DATASOURCE_ENCRYPTION_KEY env var with its own generated value (32 random
-  # bytes, base64-encoded) and keep it out of source control. Rotating it
-  # makes every already-encrypted data_source.password unreadable, since
-  # DataSourceCredentialCrypto has no key-versioning/rotation support.
-  datasource-encryption-key: ${DATASOURCE_ENCRYPTION_KEY:4kgMbfQgG6JfGtVCnxOJ+SMq9UJyCS4epfkthbMaiQw=}
+  # Local-dev-only defaults - any real deployment must override both via env
+  # vars and keep the actual key material out of source control.
+  # datasource-encryption-keys: comma-separated version:base64key pairs (each
+  # key 32 random bytes, base64-encoded) - keep an old version listed here
+  # (read-only, for decrypting not-yet-rotated rows) after adding a new one,
+  # only removing it once system/security's rotation status shows zero rows
+  # left on it. datasource-encryption-current-version selects which listed
+  # version new encryptions use - see DataSourceCredentialCrypto and
+  # EncryptionKeyRotationService (系统管理/安全设置 in the UI).
+  datasource-encryption-keys: ${DATASOURCE_ENCRYPTION_KEYS:v1:4kgMbfQgG6JfGtVCnxOJ+SMq9UJyCS4epfkthbMaiQw=}
+  datasource-encryption-current-version: ${DATASOURCE_ENCRYPTION_CURRENT_VERSION:v1}
   web:
     frontend-url: ${FRONTEND_URL:http://localhost:5178}
   bigdata:

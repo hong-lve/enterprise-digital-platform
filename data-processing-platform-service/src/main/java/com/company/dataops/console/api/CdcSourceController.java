@@ -13,11 +13,11 @@ import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.RealtimeAlertService;
 import com.company.dataops.console.service.approval.ChangeApprovalService;
-import com.company.dataops.console.service.kafka.CdcRecoveryTracker;
 import com.company.dataops.console.service.flink.SinkTableDdlBuilder;
 import com.company.dataops.console.service.kafka.CdcTableSchemaService;
 import com.company.dataops.console.service.kafka.DebeziumConnectorConfigBuilder;
 import com.company.dataops.console.service.kafka.KafkaConnectClient;
+import com.company.dataops.console.service.recovery.RecoveryOrchestrator;
 import java.util.List;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,7 +43,7 @@ public class CdcSourceController {
     private final DebeziumConnectorConfigBuilder configBuilder;
     private final RealtimeAlertService realtimeAlertService;
     private final EnvironmentGuard environmentGuard;
-    private final CdcRecoveryTracker cdcRecoveryTracker;
+    private final RecoveryOrchestrator recoveryOrchestrator;
     private final CdcTableSchemaService cdcTableSchemaService;
     private final SinkTableDdlBuilder sinkTableDdlBuilder;
     private final ChangeApprovalService changeApprovalService;
@@ -56,7 +56,7 @@ public class CdcSourceController {
         DebeziumConnectorConfigBuilder configBuilder,
         RealtimeAlertService realtimeAlertService,
         EnvironmentGuard environmentGuard,
-        CdcRecoveryTracker cdcRecoveryTracker,
+        RecoveryOrchestrator recoveryOrchestrator,
         CdcTableSchemaService cdcTableSchemaService,
         SinkTableDdlBuilder sinkTableDdlBuilder,
         ChangeApprovalService changeApprovalService,
@@ -68,7 +68,7 @@ public class CdcSourceController {
         this.configBuilder = configBuilder;
         this.realtimeAlertService = realtimeAlertService;
         this.environmentGuard = environmentGuard;
-        this.cdcRecoveryTracker = cdcRecoveryTracker;
+        this.recoveryOrchestrator = recoveryOrchestrator;
         this.cdcTableSchemaService = cdcTableSchemaService;
         this.sinkTableDdlBuilder = sinkTableDdlBuilder;
         this.changeApprovalService = changeApprovalService;
@@ -180,10 +180,10 @@ public class CdcSourceController {
                 source.setAlertState("OK");
             }
             // A manual (re)start doesn't go through CdcSourceStatusScheduler's
-            // own FAILED->RUNNING detection, so its recovery-attempt counter
-            // wouldn't otherwise be cleared - a later, unrelated failure
-            // would be wrongly treated as still-exhausted.
-            cdcRecoveryTracker.forget(source.getId());
+            // own FAILED->RUNNING detection, so its recovery state wouldn't
+            // otherwise be cleared - a later, unrelated failure would be
+            // wrongly treated as still mid-incident (wrong tier/circuit state).
+            recoveryOrchestrator.recordRecovered("CDC_SOURCE", source.getId(), source.getName());
         } catch (ResponseStatusException exception) {
             source.setStatus("FAILED");
             source.setLastError(exception.getReason());
@@ -228,8 +228,9 @@ public class CdcSourceController {
         source.setStatus("PAUSED");
         cdcSourceMapper.updateById(source);
         // Pausing is an intentional non-failure state - don't leave a stale
-        // recovery-attempt count hanging around for it.
-        cdcRecoveryTracker.forget(source.getId());
+        // recovery-attempt count hanging around for it, but don't log it as
+        // a "RECOVERED" event either since nothing was actually recovered.
+        recoveryOrchestrator.reset("CDC_SOURCE", source.getId(), source.getName(), "手动停止，清除恢复状态");
     }
 
     @GetMapping("/{id}/status")

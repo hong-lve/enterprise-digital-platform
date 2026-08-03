@@ -7,14 +7,20 @@ import com.company.dataops.console.common.ActionResult;
 import com.company.dataops.console.common.ApiResponse;
 import com.company.dataops.console.common.PageResult;
 import com.company.dataops.console.entity.FlinkSqlJobEntity;
+import com.company.dataops.console.entity.JobVersionSnapshotEntity;
 import com.company.dataops.console.mapper.FlinkSqlJobMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.RealtimeAlertService;
 import com.company.dataops.console.service.approval.ChangeApprovalService;
 import com.company.dataops.console.service.flink.FlinkSqlGatewayClient;
 import com.company.dataops.console.service.flink.FlinkSqlJobSubmissionService;
+import com.company.dataops.console.service.flink.FlinkSqlReplayService;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
+import com.company.dataops.console.service.versioning.JobVersionSnapshotService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -42,31 +48,44 @@ import org.springframework.web.server.ResponseStatusException;
 public class FlinkSqlJobController {
     private final FlinkSqlJobMapper flinkSqlJobMapper;
     private final FlinkSqlJobSubmissionService flinkSqlJobSubmissionService;
+    private final FlinkSqlReplayService flinkSqlReplayService;
     private final FlinkStreamSubmissionClient flinkStreamSubmissionClient;
     private final RealtimeAlertService realtimeAlertService;
     private final EnvironmentGuard environmentGuard;
     private final ChangeApprovalService changeApprovalService;
+    private final JobVersionSnapshotService jobVersionSnapshotService;
+    private final ObjectMapper objectMapper;
     private final String frontendUrl;
 
     public FlinkSqlJobController(
         FlinkSqlJobMapper flinkSqlJobMapper,
         FlinkSqlJobSubmissionService flinkSqlJobSubmissionService,
+        FlinkSqlReplayService flinkSqlReplayService,
         FlinkStreamSubmissionClient flinkStreamSubmissionClient,
         RealtimeAlertService realtimeAlertService,
         EnvironmentGuard environmentGuard,
         ChangeApprovalService changeApprovalService,
+        JobVersionSnapshotService jobVersionSnapshotService,
+        ObjectMapper objectMapper,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.flinkSqlJobMapper = flinkSqlJobMapper;
         this.flinkSqlJobSubmissionService = flinkSqlJobSubmissionService;
+        this.flinkSqlReplayService = flinkSqlReplayService;
         this.flinkStreamSubmissionClient = flinkStreamSubmissionClient;
         this.realtimeAlertService = realtimeAlertService;
         this.environmentGuard = environmentGuard;
         this.changeApprovalService = changeApprovalService;
+        this.jobVersionSnapshotService = jobVersionSnapshotService;
+        this.objectMapper = objectMapper;
         this.frontendUrl = frontendUrl;
         changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_SQL_JOB_DELETE, this::applyDelete);
         changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_SQL_JOB_STOP, this::applyStop);
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.FLINK_SQL_JOB_REPLAY, this::applyReplay);
+        changeApprovalService.registerWithPayload(ChangeApprovalService.ActionType.FLINK_SQL_JOB_ROLLBACK, this::applyRollback);
     }
+
+    private static final String ENTITY_TYPE = "FLINK_SQL_JOB";
 
     @GetMapping
     @PreAuthorize("hasAuthority('realtime:sql-job:view')")
@@ -93,6 +112,7 @@ public class FlinkSqlJobController {
         job.setSavepointPath(null);
         job.setLastError(null);
         flinkSqlJobMapper.insert(job);
+        jobVersionSnapshotService.recordVersion(ENTITY_TYPE, job.getId(), buildConfigSnapshot(job), null, null, "创建", null);
         return ApiResponse.ok(job);
     }
 
@@ -109,6 +129,7 @@ public class FlinkSqlJobController {
         job.setSavepointPath(null);
         job.setLastError(null);
         flinkSqlJobMapper.updateById(job);
+        jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(job), null, null, "编辑保存", null);
         return ApiResponse.ok();
     }
 
@@ -235,6 +256,89 @@ public class FlinkSqlJobController {
         return ApiResponse.ok(job);
     }
 
+    /**
+     * Tier 3 item 1 of the reliability roadmap ("历史数据回放") - resubmits
+     * the job reading its Kafka source(s) from a specific point in time (or
+     * from the very beginning) instead of wherever its consumer group last
+     * left off, via a one-time rewritten copy of the script (see
+     * FlinkSqlReplayService) - the job's own stored sqlScript is never
+     * touched. PROD-gated the same way as a rolling upgrade: resubmitting
+     * against a live sink risks duplicate/reprocessed writes if that sink
+     * isn't idempotent, which is exactly the kind of thing a second pair of
+     * eyes should catch before it happens to a production table.
+     */
+    @PostMapping("/{id}/replay")
+    @PreAuthorize("hasAuthority('realtime:sql-job:start')")
+    public ApiResponse<ActionResult> replay(@PathVariable Long id, @RequestBody ReplayRequest request) {
+        FlinkSqlJobEntity job = requireJob(id);
+        environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
+        if (job.getFlinkJobId() != null && flinkStreamSubmissionClient.isRunning(job.getFlinkJobId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "作业正在运行中，请先停止再重放");
+        }
+        // Validated here (not just in applyReplay()) so a malformed request
+        // fails immediately instead of only surfacing once an approver
+        // eventually processes it.
+        FlinkSqlReplayService.ReplayMode mode = parseReplayMode(request.mode());
+        try {
+            flinkSqlReplayService.buildReplayScript(job.getSqlScript(), mode, request.timestampMillis());
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(request);
+        } catch (JsonProcessingException exception) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "序列化重放参数失败：" + exception.getMessage());
+        }
+        ChangeApprovalService.GateResult gate = changeApprovalService.gateWithPayload(
+            ChangeApprovalService.ActionType.FLINK_SQL_JOB_REPLAY, id, job.getEnvironment(), payload, "SQL 流作业重放: " + job.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyReplay(id, payload);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyReplay(Long id, String payload) {
+        ReplayRequest request;
+        try {
+            request = objectMapper.readValue(payload, ReplayRequest.class);
+        } catch (JsonProcessingException exception) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "解析重放参数失败：" + exception.getMessage());
+        }
+        FlinkSqlJobEntity job = requireJob(id);
+        String replayScript = flinkSqlReplayService.buildReplayScript(job.getSqlScript(), parseReplayMode(request.mode()), request.timestampMillis());
+        FlinkSqlJobEntity replayJob = new FlinkSqlJobEntity();
+        BeanUtils.copyProperties(job, replayJob);
+        replayJob.setSqlScript(replayScript); // one-time override - job's own stored sqlScript is untouched
+
+        try {
+            String flinkJobId = flinkSqlJobSubmissionService.submit(replayJob);
+            job.setFlinkJobId(flinkJobId);
+            job.setStatus("RUNNING");
+            job.setLastError(null);
+        } catch (ResponseStatusException exception) {
+            job.setStatus("FAILED");
+            job.setLastError(exception.getReason());
+        }
+        flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+            .eq(FlinkSqlJobEntity::getId, job.getId())
+            .set(FlinkSqlJobEntity::getFlinkJobId, job.getFlinkJobId())
+            .set(FlinkSqlJobEntity::getStatus, job.getStatus())
+            .set(FlinkSqlJobEntity::getLastError, job.getLastError()));
+    }
+
+    private FlinkSqlReplayService.ReplayMode parseReplayMode(String mode) {
+        try {
+            return FlinkSqlReplayService.ReplayMode.valueOf(mode);
+        } catch (Exception exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "未知的重放模式：" + mode);
+        }
+    }
+
+    public record ReplayRequest(String mode, Long timestampMillis) {
+    }
+
     @GetMapping("/{id}/status")
     @PreAuthorize("hasAuthority('realtime:sql-job:view')")
     public ApiResponse<FlinkSqlJobEntity> refreshStatus(@PathVariable Long id) {
@@ -254,6 +358,88 @@ public class FlinkSqlJobController {
             .set(FlinkSqlJobEntity::getStatus, job.getStatus())
             .set(FlinkSqlJobEntity::getLastError, job.getLastError()));
         return ApiResponse.ok(job);
+    }
+
+    /** See FlinkStreamJobController.rollback()/applyRollback() - identical semantics, mirrored here for SQL jobs. */
+    @PostMapping("/{id}/rollback/{versionNo}")
+    @PreAuthorize("hasAuthority('realtime:sql-job:update')")
+    public ApiResponse<ActionResult> rollback(@PathVariable Long id, @PathVariable Integer versionNo) {
+        FlinkSqlJobEntity existing = requireJob(id);
+        environmentGuard.requirePermissionForEnvironment(existing.getEnvironment());
+        jobVersionSnapshotService.requireVersion(ENTITY_TYPE, id, versionNo); // 404s early if the version doesn't exist
+        String payload = String.valueOf(versionNo);
+        ChangeApprovalService.GateResult gate = changeApprovalService.gateWithPayload(
+            ChangeApprovalService.ActionType.FLINK_SQL_JOB_ROLLBACK, id, existing.getEnvironment(), payload, "SQL 流作业回滚至版本 " + versionNo + ": " + existing.getName());
+        if (gate.pending()) {
+            return ApiResponse.ok(ActionResult.pending(gate.requestId()));
+        }
+        applyRollback(id, payload);
+        return ApiResponse.ok(ActionResult.applied());
+    }
+
+    private void applyRollback(Long id, String payload) {
+        int versionNo = Integer.parseInt(payload);
+        FlinkSqlJobEntity existing = requireJob(id);
+        JobVersionSnapshotEntity target = jobVersionSnapshotService.requireVersion(ENTITY_TYPE, id, versionNo);
+        FlinkSqlJobEntity targetConfig = jobVersionSnapshotService.readConfig(target, FlinkSqlJobEntity.class);
+        targetConfig.setId(id);
+        targetConfig.setStatus(null);
+        targetConfig.setFlinkJobId(null);
+        targetConfig.setSavepointPath(null);
+        targetConfig.setLastError(null);
+        flinkSqlJobMapper.updateById(targetConfig);
+
+        if ("RUNNING".equals(existing.getStatus()) && existing.getFlinkJobId() != null) {
+            try {
+                // Deliberately discarded - see FlinkStreamJobController's identical comment.
+                flinkStreamSubmissionClient.stopWithSavepoint(existing.getFlinkJobId());
+            } catch (Exception exception) {
+                flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+                    .eq(FlinkSqlJobEntity::getId, id)
+                    .set(FlinkSqlJobEntity::getStatus, "FAILED")
+                    .set(FlinkSqlJobEntity::getLastError, "回滚失败：无法停止当前运行实例（" + exception.getMessage() + "），请人工检查"));
+                return;
+            }
+        }
+
+        FlinkSqlJobEntity toSubmit = requireJob(id); // reload - now has version N's config
+        toSubmit.setSavepointPath(target.getSavepointPath());
+        try {
+            String flinkJobId = flinkSqlJobSubmissionService.submit(toSubmit);
+            flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+                .eq(FlinkSqlJobEntity::getId, id)
+                .set(FlinkSqlJobEntity::getFlinkJobId, flinkJobId)
+                .set(FlinkSqlJobEntity::getStatus, "RUNNING")
+                .set(FlinkSqlJobEntity::getSavepointPath, target.getSavepointPath())
+                .set(FlinkSqlJobEntity::getLastError, null));
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), flinkJobId, "回滚至版本 " + versionNo, versionNo);
+        } catch (Exception exception) {
+            flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+                .eq(FlinkSqlJobEntity::getId, id)
+                .set(FlinkSqlJobEntity::getStatus, "FAILED")
+                .set(FlinkSqlJobEntity::getSavepointPath, target.getSavepointPath())
+                .set(FlinkSqlJobEntity::getLastError, "回滚失败：版本 " + versionNo + " 的配置启动失败（" + exception.getMessage() + "）"));
+            jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), null, "回滚至版本 " + versionNo + "（部署失败）", versionNo);
+        }
+    }
+
+    /** Config-only copy for diffing/rollback - nulls out everything that's a runtime fact rather than part of the definition. */
+    private FlinkSqlJobEntity buildConfigSnapshot(FlinkSqlJobEntity job) {
+        FlinkSqlJobEntity copy = new FlinkSqlJobEntity();
+        BeanUtils.copyProperties(job, copy);
+        copy.setId(null);
+        copy.setFlinkJobId(null);
+        copy.setSavepointPath(null);
+        copy.setStatus(null);
+        copy.setLastError(null);
+        copy.setAlertState(null);
+        copy.setBackpressureRatio(null);
+        copy.setBackpressureAlertState(null);
+        copy.setConsumerLagRecords(null);
+        copy.setConsumerLagAlertState(null);
+        copy.setCreatedAt(null);
+        copy.setUpdatedAt(null);
+        return copy;
     }
 
     private FlinkSqlJobEntity requireJob(Long id) {

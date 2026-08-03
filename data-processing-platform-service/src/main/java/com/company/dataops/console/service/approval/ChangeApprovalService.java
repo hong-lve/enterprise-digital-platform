@@ -44,11 +44,16 @@ public class ChangeApprovalService {
         CDC_SOURCE_STOP,
         FLINK_STREAM_JOB_DELETE,
         FLINK_STREAM_JOB_STOP,
+        FLINK_STREAM_JOB_UPGRADE,
+        FLINK_STREAM_JOB_ROLLBACK,
         FLINK_SQL_JOB_DELETE,
         FLINK_SQL_JOB_STOP,
+        FLINK_SQL_JOB_REPLAY,
+        FLINK_SQL_JOB_ROLLBACK,
         ROLE_PERMISSION_UPDATE,
         USER_DISABLE,
-        USER_PASSWORD_RESET
+        USER_PASSWORD_RESET,
+        ENCRYPTION_KEY_ROTATE
     }
 
     @FunctionalInterface
@@ -79,17 +84,24 @@ public class ChangeApprovalService {
 
     private static final String APPROVAL_PERMISSION = "system:approval:handle";
 
-    private static final Map<ActionType, String> ACTION_LABEL = Map.of(
-        ActionType.DATA_SOURCE_DELETE, "删除数据源",
-        ActionType.CDC_SOURCE_DELETE, "删除 CDC 数据源",
-        ActionType.CDC_SOURCE_STOP, "停止 CDC 数据源",
-        ActionType.FLINK_STREAM_JOB_DELETE, "删除 Flink 流作业",
-        ActionType.FLINK_STREAM_JOB_STOP, "停止 Flink 流作业",
-        ActionType.FLINK_SQL_JOB_DELETE, "删除 SQL 流作业",
-        ActionType.FLINK_SQL_JOB_STOP, "停止 SQL 流作业",
-        ActionType.ROLE_PERMISSION_UPDATE, "修改角色权限",
-        ActionType.USER_DISABLE, "禁用用户",
-        ActionType.USER_PASSWORD_RESET, "重置用户密码"
+    // Map.of() tops out at 10 key-value pairs - this has 11, so it needs the
+    // explicit Map.entry()/ofEntries() form instead.
+    private static final Map<ActionType, String> ACTION_LABEL = Map.ofEntries(
+        Map.entry(ActionType.DATA_SOURCE_DELETE, "删除数据源"),
+        Map.entry(ActionType.CDC_SOURCE_DELETE, "删除 CDC 数据源"),
+        Map.entry(ActionType.CDC_SOURCE_STOP, "停止 CDC 数据源"),
+        Map.entry(ActionType.FLINK_STREAM_JOB_DELETE, "删除 Flink 流作业"),
+        Map.entry(ActionType.FLINK_STREAM_JOB_STOP, "停止 Flink 流作业"),
+        Map.entry(ActionType.FLINK_STREAM_JOB_UPGRADE, "滚动升级 Flink 流作业"),
+        Map.entry(ActionType.FLINK_STREAM_JOB_ROLLBACK, "回滚 Flink 流作业"),
+        Map.entry(ActionType.FLINK_SQL_JOB_DELETE, "删除 SQL 流作业"),
+        Map.entry(ActionType.FLINK_SQL_JOB_STOP, "停止 SQL 流作业"),
+        Map.entry(ActionType.FLINK_SQL_JOB_REPLAY, "重放 SQL 流作业"),
+        Map.entry(ActionType.FLINK_SQL_JOB_ROLLBACK, "回滚 SQL 流作业"),
+        Map.entry(ActionType.ROLE_PERMISSION_UPDATE, "修改角色权限"),
+        Map.entry(ActionType.USER_DISABLE, "禁用用户"),
+        Map.entry(ActionType.USER_PASSWORD_RESET, "重置用户密码"),
+        Map.entry(ActionType.ENCRYPTION_KEY_ROTATE, "轮换加密密钥")
     );
 
     private final ChangeRequestMapper changeRequestMapper;
@@ -137,6 +149,14 @@ public class ChangeApprovalService {
     }
 
     public GateResult gateAlwaysWithPayload(ActionType type, Long targetId, String payload, String targetSummary) {
+        return createPendingRequest(type, targetId, payload, targetSummary);
+    }
+
+    /** gate()'s environment-conditional check, combined with gateAlwaysWithPayload()'s payload carrying - for actions like a rolling upgrade that need both. */
+    public GateResult gateWithPayload(ActionType type, Long targetId, String environment, String payload, String targetSummary) {
+        if (!"PROD".equals(environment)) {
+            return GateResult.applied();
+        }
         return createPendingRequest(type, targetId, payload, targetSummary);
     }
 

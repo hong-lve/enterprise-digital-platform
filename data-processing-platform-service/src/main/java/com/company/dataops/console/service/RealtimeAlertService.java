@@ -9,6 +9,9 @@ import com.company.dataops.console.mapper.AlertHistoryMapper;
 import com.company.dataops.console.mapper.MessageMapper;
 import com.company.dataops.console.mapper.MessageReceiverMapper;
 import com.company.dataops.console.mapper.UserMapper;
+import com.company.dataops.console.service.alerting.AlertRetryQueueService;
+import com.company.dataops.console.service.alerting.AlertSilenceService;
+import com.company.dataops.console.service.alerting.OnCallService;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,19 +26,28 @@ public class RealtimeAlertService {
     private final UserMapper userMapper;
     private final WebhookAlertSender webhookAlertSender;
     private final AlertHistoryMapper alertHistoryMapper;
+    private final AlertSilenceService alertSilenceService;
+    private final OnCallService onCallService;
+    private final AlertRetryQueueService alertRetryQueueService;
 
     public RealtimeAlertService(
         MessageMapper messageMapper,
         MessageReceiverMapper messageReceiverMapper,
         UserMapper userMapper,
         WebhookAlertSender webhookAlertSender,
-        AlertHistoryMapper alertHistoryMapper
+        AlertHistoryMapper alertHistoryMapper,
+        AlertSilenceService alertSilenceService,
+        OnCallService onCallService,
+        AlertRetryQueueService alertRetryQueueService
     ) {
         this.messageMapper = messageMapper;
         this.messageReceiverMapper = messageReceiverMapper;
         this.userMapper = userMapper;
         this.webhookAlertSender = webhookAlertSender;
         this.alertHistoryMapper = alertHistoryMapper;
+        this.alertSilenceService = alertSilenceService;
+        this.onCallService = onCallService;
+        this.alertRetryQueueService = alertRetryQueueService;
     }
 
     /**
@@ -64,7 +76,9 @@ public class RealtimeAlertService {
      * one-off "please review this" event isn't.
      */
     public void notifyMultiple(List<String> owners, String title, String content, String type, String linkUrl) {
-        webhookAlertSender.send(title, content, type, linkUrl);
+        if (!webhookAlertSender.send(title, content, type, linkUrl)) {
+            alertRetryQueueService.enqueue(title, content, type, linkUrl);
+        }
         if (owners == null || owners.isEmpty()) {
             return;
         }
@@ -96,16 +110,38 @@ public class RealtimeAlertService {
      * TaskAlertService.
      */
     private void send(AlertSubject subject, String owner, String title, String content, String type, String linkUrl) {
+        // Recorded unconditionally, even if silenced below - alert_history is
+        // the audit timeline of what actually happened, not of who got
+        // bothered about it.
+        recordHistory(subject, type, content);
+        if (alertSilenceService.isSilenced(subject.entityType(), subject.entityId())) {
+            return;
+        }
         // Webhook fires regardless of owner - a DingTalk group robot is a
         // shared ops channel, not tied to a specific sys_user, unlike the
         // in-app message below which needs a real user row to attach to.
-        webhookAlertSender.send(title, content, type, linkUrl);
-        recordHistory(subject, type, content);
-        if (owner == null || owner.isBlank()) {
-            return;
+        if (!webhookAlertSender.send(title, content, type, linkUrl)) {
+            alertRetryQueueService.enqueue(title, content, type, linkUrl);
         }
+        if (owner != null && !owner.isBlank()) {
+            sendInAppMessage(owner, title, content, type, linkUrl);
+        }
+        // On-call gets paged for every genuine failure, not just ones on
+        // their own resources - that's the point of being on call. Skipped
+        // for RECOVERY (would double every recovery ping) and skipped if
+        // they're already the owner just notified above (would be a dupe).
+        if ("ALERT".equals(type)) {
+            String onCall = onCallService.currentOnCall();
+            if (onCall != null && !onCall.equals(owner)) {
+                sendInAppMessage(onCall, title, content, type, linkUrl);
+            }
+        }
+    }
+
+    /** Never throws - silently does nothing if the receiver isn't a real user. */
+    private void sendInAppMessage(String receiver, String title, String content, String type, String linkUrl) {
         try {
-            UserEntity user = userMapper.selectOne(new LambdaQueryWrapper<UserEntity>().eq(UserEntity::getUsername, owner));
+            UserEntity user = userMapper.selectOne(new LambdaQueryWrapper<UserEntity>().eq(UserEntity::getUsername, receiver));
             if (user == null) {
                 return;
             }
@@ -117,13 +153,13 @@ public class RealtimeAlertService {
             message.setSender("system");
             messageMapper.insert(message);
 
-            MessageReceiverEntity receiver = new MessageReceiverEntity();
-            receiver.setMessageId(message.getId());
-            receiver.setReceiver(owner);
-            receiver.setReadStatus("UNREAD");
-            messageReceiverMapper.insert(receiver);
+            MessageReceiverEntity messageReceiver = new MessageReceiverEntity();
+            messageReceiver.setMessageId(message.getId());
+            messageReceiver.setReceiver(receiver);
+            messageReceiver.setReadStatus("UNREAD");
+            messageReceiverMapper.insert(messageReceiver);
         } catch (Exception exception) {
-            LOGGER.warn("Failed to send {} alert to {}: {}", type, owner, exception.getMessage());
+            LOGGER.warn("Failed to send {} alert to {}: {}", type, receiver, exception.getMessage());
         }
     }
 

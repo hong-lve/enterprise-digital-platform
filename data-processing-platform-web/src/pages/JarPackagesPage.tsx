@@ -344,7 +344,7 @@ export function JarPackagesPage() {
         onOk={() => compileForm.submit()}
         confirmLoading={compiling}
         okText="编译并保存"
-        width={960}
+        width={1360}
         destroyOnClose
         // Monaco measures its container's size once, right when it mounts -
         // the modal is still mid open-animation (container effectively 0x0)
@@ -360,84 +360,97 @@ export function JarPackagesPage() {
           }
         }}
       >
-        <Typography.Paragraph type="secondary">
-          编译使用固定的类路径（Flink API + Kafka 连接器 + jackson + 本平台已有的各数据库驱动 + CdcMirrorSupport 公共逻辑），不支持引入额外的第三方依赖；如果需要用到这几样之外的库，还是得像现有的 cdc-mirror-* 系列一样手写 Maven 模块再上传。"编译并保存"只编译不执行；"调试运行"会真的把代码跑起来（在服务器上单独开一个进程，最多跑 15 秒后自动强制结束），按下面"程序参数"里填的地址连真实的 Kafka/目标数据源，用来在正式提交到 Flink 集群之前，提前看看代码到底跑不跑得通。
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          编译使用固定的类路径（Flink API + Kafka 连接器 + jackson + 本平台已有的各数据库驱动 + CdcMirrorSupport 公共逻辑），不支持引入额外的第三方依赖；如果需要用到这几样之外的库，还是得像现有的 cdc-mirror-* 系列一样手写 Maven 模块再上传。"编译并保存"只编译不执行；"调试运行"会真的把代码跑起来（在服务器上单独开一个进程，最多跑 15 秒后自动强制结束），按右边"程序参数"里填的地址连真实的 Kafka/目标数据源，用来在正式提交到 Flink 集群之前，提前看看代码到底跑不跑得通。
         </Typography.Paragraph>
-        <Form form={compileForm} layout="vertical" onFinish={submitCompile}>
-          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]} extra="Flink 流作业页面选择 jar 包时显示这个名称">
-            <Input placeholder="例如：自定义 CDC 同步作业" />
-          </Form.Item>
-          <Form.Item name="description" label="说明">
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <Form.Item
-            name="className"
-            label="入口类全限定名"
-            rules={[{ required: true, message: '请输入入口类全限定名' }, { pattern: /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/, message: '需要是合法的 Java 全限定类名' }]}
-            extra="要跟下面代码里 public class 的类名（含包名）完全一致"
-          >
-            <Input placeholder="com.company.userjobs.MyCustomJob" />
-          </Form.Item>
-          <Form.Item
-            name="targetType"
-            label="目标数据源类型"
-            rules={[{ required: true, message: '请选择目标数据源类型' }]}
-            extra="决定编译时合入哪个已有驱动包 - 选具体某个类型时 jar 包更小；只有代码里同时用到多种驱动才需要选“全部”"
-          >
-            <Select options={TARGET_TYPE_OPTIONS} />
-          </Form.Item>
-          <Form.Item
-            name="programArgs"
-            label="程序参数（仅调试运行使用）"
-            extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口），跟 Flink 流作业里最终提交时要填的 Docker 网络地址不是一回事"
-          >
-            <Input placeholder="--kafka-bootstrap localhost:19092 --topic mysqldemo.cdc_demo.test_orders_mysql --sink-host localhost --sink-port 6379 ..." />
-          </Form.Item>
-        </Form>
-        <Space style={{ marginBottom: 12 }}>
-          <Button icon={<BugOutlined />} loading={debugRunning} onClick={runDebug}>调试运行</Button>
-        </Space>
-        <Form.Item label="源代码" style={{ marginBottom: compileError ? 12 : 0 }}>
-          <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
-            <Editor
-              height="420px"
-              language="java"
-              value={sourceCode}
-              onChange={(value) => setSourceCode(value ?? '')}
-              onMount={(editor) => {
-                editorRef.current = editor;
-                // Modal's open animation may still be finishing when Monaco
-                // itself finishes loading (confirmed live: the two race, and
-                // afterOpenChange alone isn't reliable since it can fire
-                // before this callback sets editorRef) - laying out here,
-                // exactly when the editor instance actually exists, is what
-                // reliably fixes it regardless of which one wins the race.
-                editor.layout();
-              }}
-              options={{ minimap: { enabled: false }, fontSize: 13 }}
-            />
+        {/* Side-by-side instead of everything stacked above the editor - the
+            code is what someone actually spends their time looking at/editing
+            here, and it used to get squeezed into a small fixed-height box
+            below five full-width form fields, forcing scrolling inside the
+            modal just to see it. */}
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div style={{ width: 300, flexShrink: 0 }}>
+            <Form form={compileForm} layout="vertical" onFinish={submitCompile}>
+              <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]} extra="Flink 流作业页面选择 jar 包时显示这个名称">
+                <Input placeholder="例如：自定义 CDC 同步作业" />
+              </Form.Item>
+              <Form.Item name="description" label="说明">
+                <Input.TextArea rows={2} />
+              </Form.Item>
+              <Form.Item
+                name="className"
+                label="入口类全限定名"
+                rules={[{ required: true, message: '请输入入口类全限定名' }, { pattern: /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/, message: '需要是合法的 Java 全限定类名' }]}
+                extra="要跟右边代码里 public class 的类名（含包名）完全一致"
+              >
+                <Input placeholder="com.company.userjobs.MyCustomJob" />
+              </Form.Item>
+              <Form.Item
+                name="targetType"
+                label="目标数据源类型"
+                rules={[{ required: true, message: '请选择目标数据源类型' }]}
+                extra="决定编译时合入哪个已有驱动包 - 选具体某个类型时 jar 包更小；只有代码里同时用到多种驱动才需要选“全部”"
+              >
+                <Select options={TARGET_TYPE_OPTIONS} />
+              </Form.Item>
+              <Form.Item
+                name="programArgs"
+                label="程序参数（仅调试运行使用）"
+                extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口），跟 Flink 流作业里最终提交时要填的 Docker 网络地址不是一回事"
+              >
+                <Input placeholder="--kafka-bootstrap localhost:19092 --topic ..." />
+              </Form.Item>
+            </Form>
+            <Button icon={<BugOutlined />} loading={debugRunning} onClick={runDebug} block>调试运行</Button>
+            {compileError && <Alert type="error" showIcon message="编译失败" description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{compileError}</pre>} style={{ marginTop: 12 }} />}
+            {debugOutput && (
+              <pre
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  margin: '12px 0 0',
+                  maxHeight: 300,
+                  overflow: 'auto',
+                  background: '#001529',
+                  color: '#d9d9d9',
+                  padding: 12,
+                  borderRadius: 6,
+                  fontSize: 12
+                }}
+              >
+                {debugOutput}
+              </pre>
+            )}
           </div>
-        </Form.Item>
-        {compileError && <Alert type="error" showIcon message="编译失败" description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{compileError}</pre>} style={{ marginBottom: debugOutput ? 12 : 0 }} />}
-        {debugOutput && (
-          <Form.Item label="调试输出">
-            <pre
-              style={{
-                whiteSpace: 'pre-wrap',
-                margin: 0,
-                maxHeight: 300,
-                overflow: 'auto',
-                background: '#001529',
-                color: '#d9d9d9',
-                padding: 12,
-                borderRadius: 6,
-                fontSize: 12
-              }}
-            >
-              {debugOutput}
-            </pre>
-          </Form.Item>
-        )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+              <Editor
+                height="640px"
+                language="java"
+                value={sourceCode}
+                onChange={(value) => setSourceCode(value ?? '')}
+                onMount={(editor) => {
+                  editorRef.current = editor;
+                  // Modal's open animation may still be finishing when Monaco
+                  // itself finishes loading (confirmed live: the two race, and
+                  // afterOpenChange alone isn't reliable since it can fire
+                  // before this callback sets editorRef) - laying out here,
+                  // exactly when the editor instance actually exists, is what
+                  // reliably fixes it regardless of which one wins the race.
+                  editor.layout();
+                }}
+                // Container width comes from a flex sibling (the sidebar
+                // form), which can still be settling its own layout the
+                // instant Monaco's onMount/afterOpenChange manual layout()
+                // calls fire - confirmed live: those two land the editor at
+                // a stale, narrower width that never corrects itself
+                // afterward. automaticLayout keeps Monaco's own internal
+                // ResizeObserver watching its container, so it's unaffected
+                // by exactly when the one-off manual calls happen to run.
+                options={{ minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+              />
+            </div>
+          </div>
+        </div>
       </Modal>
 
       <Modal
@@ -447,7 +460,7 @@ export function JarPackagesPage() {
         onOk={() => editCodeForm.submit()}
         confirmLoading={editCodeSaving}
         okText="编译并保存"
-        width={960}
+        width={1360}
         destroyOnClose
         afterOpenChange={(open) => {
           if (open) {
@@ -455,72 +468,80 @@ export function JarPackagesPage() {
           }
         }}
       >
-        <Typography.Paragraph type="secondary">
-          修改后点击"编译并保存"会重新编译并直接替换这个 jar 包正在使用的文件（旧版本仍保留在下面"编辑"弹窗的历史版本里，可以恢复）。跟"在线编写"一样，"调试运行"只是先跑一下看看代码通不通，不会保存。
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          修改后点击"编译并保存"会重新编译并直接替换这个 jar 包正在使用的文件（旧版本仍保留在"编辑"弹窗的历史版本里，可以恢复）。跟"在线编写"一样，"调试运行"只是先跑一下看看代码通不通，不会保存。
         </Typography.Paragraph>
-        <Form form={editCodeForm} layout="vertical" onFinish={submitEditCode}>
-          <Form.Item
-            name="className"
-            label="入口类全限定名"
-            rules={[{ required: true, message: '请输入入口类全限定名' }, { pattern: /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/, message: '需要是合法的 Java 全限定类名' }]}
-            extra="要跟下面代码里 public class 的类名（含包名）完全一致"
-          >
-            <Input placeholder="com.company.userjobs.MyCustomJob" />
-          </Form.Item>
-          <Form.Item
-            name="targetType"
-            label="目标数据源类型"
-            rules={[{ required: true, message: '请选择目标数据源类型' }]}
-            extra="决定编译时合入哪个已有驱动包"
-          >
-            <Select options={TARGET_TYPE_OPTIONS} />
-          </Form.Item>
-          <Form.Item
-            name="programArgs"
-            label="程序参数（仅调试运行使用）"
-            extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口）"
-          >
-            <Input placeholder="--kafka-bootstrap localhost:19092 --topic mysqldemo.cdc_demo.test_orders_mysql --sink-host localhost --sink-port 6379 ..." />
-          </Form.Item>
-        </Form>
-        <Space style={{ marginBottom: 12 }}>
-          <Button icon={<BugOutlined />} loading={editCodeDebugRunning} onClick={runEditCodeDebug}>调试运行</Button>
-        </Space>
-        <Form.Item label="源代码" style={{ marginBottom: editCodeError ? 12 : 0 }}>
-          <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
-            <Editor
-              height="420px"
-              language="java"
-              value={editCodeSource}
-              onChange={(value) => setEditCodeSource(value ?? '')}
-              onMount={(editor) => {
-                editCodeEditorRef.current = editor;
-                editor.layout();
-              }}
-              options={{ minimap: { enabled: false }, fontSize: 13 }}
-            />
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div style={{ width: 300, flexShrink: 0 }}>
+            <Form form={editCodeForm} layout="vertical" onFinish={submitEditCode}>
+              <Form.Item
+                name="className"
+                label="入口类全限定名"
+                rules={[{ required: true, message: '请输入入口类全限定名' }, { pattern: /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/, message: '需要是合法的 Java 全限定类名' }]}
+                extra="要跟右边代码里 public class 的类名（含包名）完全一致"
+              >
+                <Input placeholder="com.company.userjobs.MyCustomJob" />
+              </Form.Item>
+              <Form.Item
+                name="targetType"
+                label="目标数据源类型"
+                rules={[{ required: true, message: '请选择目标数据源类型' }]}
+                extra="决定编译时合入哪个已有驱动包"
+              >
+                <Select options={TARGET_TYPE_OPTIONS} />
+              </Form.Item>
+              <Form.Item
+                name="programArgs"
+                label="程序参数（仅调试运行使用）"
+                extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口）"
+              >
+                <Input placeholder="--kafka-bootstrap localhost:19092 --topic ..." />
+              </Form.Item>
+            </Form>
+            <Button icon={<BugOutlined />} loading={editCodeDebugRunning} onClick={runEditCodeDebug} block>调试运行</Button>
+            {editCodeError && <Alert type="error" showIcon message="编译失败" description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{editCodeError}</pre>} style={{ marginTop: 12 }} />}
+            {editCodeDebugOutput && (
+              <pre
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  margin: '12px 0 0',
+                  maxHeight: 300,
+                  overflow: 'auto',
+                  background: '#001529',
+                  color: '#d9d9d9',
+                  padding: 12,
+                  borderRadius: 6,
+                  fontSize: 12
+                }}
+              >
+                {editCodeDebugOutput}
+              </pre>
+            )}
           </div>
-        </Form.Item>
-        {editCodeError && <Alert type="error" showIcon message="编译失败" description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{editCodeError}</pre>} style={{ marginBottom: editCodeDebugOutput ? 12 : 0 }} />}
-        {editCodeDebugOutput && (
-          <Form.Item label="调试输出">
-            <pre
-              style={{
-                whiteSpace: 'pre-wrap',
-                margin: 0,
-                maxHeight: 300,
-                overflow: 'auto',
-                background: '#001529',
-                color: '#d9d9d9',
-                padding: 12,
-                borderRadius: 6,
-                fontSize: 12
-              }}
-            >
-              {editCodeDebugOutput}
-            </pre>
-          </Form.Item>
-        )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+              <Editor
+                height="640px"
+                language="java"
+                value={editCodeSource}
+                onChange={(value) => setEditCodeSource(value ?? '')}
+                onMount={(editor) => {
+                  editCodeEditorRef.current = editor;
+                  editor.layout();
+                }}
+                // Container width comes from a flex sibling (the sidebar
+                // form), which can still be settling its own layout the
+                // instant Monaco's onMount/afterOpenChange manual layout()
+                // calls fire - confirmed live: those two land the editor at
+                // a stale, narrower width that never corrects itself
+                // afterward. automaticLayout keeps Monaco's own internal
+                // ResizeObserver watching its container, so it's unaffected
+                // by exactly when the one-off manual calls happen to run.
+                options={{ minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+              />
+            </div>
+          </div>
+        </div>
       </Modal>
 
       <Modal

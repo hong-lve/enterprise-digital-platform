@@ -1,5 +1,6 @@
 import { http } from './http';
 import type { ApiResponse } from './auth';
+import type { ActionResult } from './approval';
 
 export interface PageResult<T> {
   total: number;
@@ -81,4 +82,17 @@ export function refreshFlinkSqlJobStatus(id: number) {
 
 export function clearFlinkSqlJobSavepoint(id: number) {
   return http.post<ApiResponse<FlinkSqlJobRecord>>(`${basePath}/${id}/clear-savepoint`).then(unwrap);
+}
+
+export type ReplayMode = 'NORMAL' | 'FROM_EARLIEST' | 'FROM_TIMESTAMP';
+
+// Same extended timeout as startFlinkSqlJob() - this goes through the exact
+// same per-statement-budgeted submission path (FlinkSqlJobSubmissionService).
+export function replayFlinkSqlJob(id: number, mode: ReplayMode, timestampMillis?: number) {
+  return http.post<ApiResponse<ActionResult>>(`${basePath}/${id}/replay`, { mode, timestampMillis }, { timeout: 30000 }).then(unwrap);
+}
+
+// See FlinkStreamJobController.rollback()/applyRollback() - identical semantics for SQL jobs.
+export function rollbackFlinkSqlJob(id: number, versionNo: number) {
+  return http.post<ApiResponse<ActionResult>>(`${basePath}/${id}/rollback/${versionNo}`).then(unwrap);
 }

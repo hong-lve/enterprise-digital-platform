@@ -21,6 +21,9 @@ interface CheckFormValues {
   targetDatabase?: string;
   targetTable: string;
   tolerance: number;
+  checkType: string;
+  aggregateColumn?: string;
+  partitionColumn?: string;
 }
 
 const stateColor: Record<string, string> = { OK: 'green', DRIFT: 'red', ERROR: 'orange' };
@@ -34,6 +37,7 @@ export function ReconciliationPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<CheckFormValues>();
+  const checkType = Form.useWatch('checkType', form);
   const can = useAuthStore((state) => state.hasPermission);
 
   const load = () => {
@@ -52,7 +56,7 @@ export function ReconciliationPage() {
 
   const openCreate = () => {
     form.resetFields();
-    form.setFieldsValue({ tolerance: 0 });
+    form.setFieldsValue({ tolerance: 0, checkType: 'ROW_COUNT' });
     setModalOpen(true);
   };
 
@@ -71,8 +75,12 @@ export function ReconciliationPage() {
     setBusyId(id);
     runReconciliationCheck(id)
       .then((updated) => {
+        const isAggregate = updated.checkType === 'AGGREGATE';
+        const comparison = isAggregate
+          ? `源聚合值 ${updated.lastSourceAggregate} / 目标聚合值 ${updated.lastTargetAggregate}`
+          : `源 ${updated.lastSourceCount} 行，目标 ${updated.lastTargetCount} 行`;
         message[updated.lastState === 'OK' ? 'success' : 'warning'](
-          updated.lastState === 'OK' ? '一致：源和目标行数相同' : `${updated.lastState === 'ERROR' ? '检查失败' : '发现差异'}：源 ${updated.lastSourceCount} 行，目标 ${updated.lastTargetCount} 行`
+          updated.lastState === 'OK' ? '一致：' + comparison : `${updated.lastState === 'ERROR' ? '检查失败：' + updated.lastError : '发现差异：' + comparison}`
         );
         load();
       })
@@ -126,16 +134,31 @@ export function ReconciliationPage() {
           },
           { title: '容忍差异', dataIndex: 'tolerance', width: 90, align: 'center' },
           {
+            title: '类型',
+            dataIndex: 'checkType',
+            width: 90,
+            render: (value?: string) => value === 'AGGREGATE' ? <Tag color="blue">聚合值</Tag> : <Tag>行数</Tag>
+          },
+          {
             title: '状态',
             width: 110,
             render: (_, record) => record.lastState ? <Tag color={stateColor[record.lastState]}>{stateLabel[record.lastState] ?? record.lastState}</Tag> : <Tag>未执行</Tag>
           },
           {
             title: '最近一次结果',
-            width: 160,
-            render: (_, record) => record.lastCheckedAt
-              ? `源 ${record.lastSourceCount ?? '-'} / 目标 ${record.lastTargetCount ?? '-'}`
-              : '-'
+            width: 200,
+            render: (_, record) => {
+              if (!record.lastCheckedAt) return '-';
+              const comparison = record.checkType === 'AGGREGATE'
+                ? `源 ${record.lastSourceAggregate ?? '-'} / 目标 ${record.lastTargetAggregate ?? '-'}`
+                : `源 ${record.lastSourceCount ?? '-'} / 目标 ${record.lastTargetCount ?? '-'}`;
+              return (
+                <>
+                  <div>{comparison}</div>
+                  {record.partitionDriftSummary && <div style={{ color: '#cf1322', fontSize: 12 }}>分区差异：{record.partitionDriftSummary}</div>}
+                </>
+              );
+            }
           },
           { title: '最近检查时间', dataIndex: 'lastCheckedAt', width: 170, render: (value?: string) => value || '-' },
           {
@@ -217,7 +240,23 @@ export function ReconciliationPage() {
           >
             <Input placeholder="例如：test_orders_mysql_ch_sink 或 test_orders_mysql_redis_sink:*" />
           </Form.Item>
-          <Form.Item name="tolerance" label="容忍的行数差异" extra="CDC 异步复制通常有短暂滞后，差异在此范围内不算异常" rules={[{ required: true }]}>
+          <Form.Item name="checkType" label="对账方式" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'ROW_COUNT', label: '行数比较' },
+                { value: 'AGGREGATE', label: '聚合值比较（SUM）- 能发现"行数一样但数值错了"的问题' }
+              ]}
+            />
+          </Form.Item>
+          {checkType === 'AGGREGATE' && (
+            <Form.Item name="aggregateColumn" label="聚合字段" rules={[{ required: true, message: '请输入要 SUM 的数值字段' }]} extra="源和目标使用同一个字段名">
+              <Input placeholder="例如：amount" />
+            </Form.Item>
+          )}
+          <Form.Item name="partitionColumn" label="分区字段（可选）" extra="填了就按这个字段分组比较，能定位到具体是哪个分区/日期出的差异，而不是一个笼统的总差异；源和目标使用同一个字段名">
+            <Input placeholder="例如：order_date" />
+          </Form.Item>
+          <Form.Item name="tolerance" label="容忍的差异" extra="CDC 异步复制通常有短暂滞后，差异在此范围内不算异常" rules={[{ required: true }]}>
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
