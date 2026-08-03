@@ -72,6 +72,20 @@
       <version>5.10.2</version>
       <scope>test</scope>
     </dependency>
+    <!--
+      MockSchemaRegistryClient - an in-memory fake of the Schema Registry HTTP
+      API - lets DebeziumAvroRowExtractorTest encode/decode real Confluent-wire-
+      format Avro (magic byte + schema id + binary) entirely inside the JVM, no
+      running registry needed. Pinned to the same version as kafka-avro-serializer
+      above since it's normally just a transitive dep of it; listed explicitly
+      here because test code compiles against it directly.
+    -->
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-schema-registry-client</artifactId>
+      <version>7.6.1</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

@@ -130,7 +130,12 @@ public final class CdcMirrorSupport {
      * sibling "schema" key), Avro has no such wrapper - the schema lives in
      * the registry instead, so op/after sit directly on the decoded record.
      */
-    private static class DebeziumAvroRowExtractor implements MapFunction<byte[], Map<String, String>> {
+    // Package-private (not private) so CdcMirrorSupportTest/DebeziumAvroRowExtractorTest
+    // can construct one directly with a MockSchemaRegistryClient-backed deserializer and
+    // assert real decoded field values - see the test's own javadoc for why this specific
+    // class is the one place a regression here (e.g. reverting to JSON-style parsing of
+    // what's actually Confluent-wire-format Avro) needs a pinning test.
+    static class DebeziumAvroRowExtractor implements MapFunction<byte[], Map<String, String>> {
         private final String topic;
         private final String schemaRegistryUrl;
         private transient KafkaAvroDeserializer deserializer;
@@ -138,6 +143,16 @@ public final class CdcMirrorSupport {
         DebeziumAvroRowExtractor(String topic, String schemaRegistryUrl) {
             this.topic = topic;
             this.schemaRegistryUrl = schemaRegistryUrl;
+        }
+
+        // Test-only entry point: production always goes through the lazy-init path
+        // above (real schema-registry-url), this one takes an already-configured
+        // deserializer (backed by MockSchemaRegistryClient in tests) so map() skips
+        // straight to decoding without needing a real registry over HTTP.
+        DebeziumAvroRowExtractor(String topic, KafkaAvroDeserializer deserializer) {
+            this.topic = topic;
+            this.schemaRegistryUrl = null;
+            this.deserializer = deserializer;
         }
 
         @Override
