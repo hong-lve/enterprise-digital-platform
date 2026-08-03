@@ -14,6 +14,8 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 
 @Repository
 public class RequestSecurityRepository {
@@ -30,11 +32,13 @@ public class RequestSecurityRepository {
     private final StringRedisTemplate redisTemplate;
     private final String redisPrefix;
     private final boolean redisEnabled;
+    private final Counter redisFallbackCounter;
     private final AtomicLong cleanupCounter = new AtomicLong();
 
     public RequestSecurityRepository(
         JdbcTemplate jdbcTemplate,
         ObjectProvider<StringRedisTemplate> redisTemplate,
+        MeterRegistry meterRegistry,
         @Value("${platform.data-service.rate-limit.redis-prefix:data-service:rate-limit}") String redisPrefix,
         @Value("${platform.data-service.rate-limit.redis-enabled:true}") boolean redisEnabled
     ) {
@@ -42,6 +46,9 @@ public class RequestSecurityRepository {
         this.redisTemplate = redisTemplate.getIfAvailable();
         this.redisPrefix = redisPrefix;
         this.redisEnabled = redisEnabled;
+        this.redisFallbackCounter = Counter.builder("data_service_guardrail_fallback")
+            .tag("guardrail", "rate_limit")
+            .register(meterRegistry);
     }
 
     public boolean registerNonce(String appKey, String nonce, Instant expiresAt) {
@@ -70,8 +77,12 @@ public class RequestSecurityRepository {
                 int current = count == null ? 1 : Math.toIntExact(count);
                 return new RateLimitDecision(current <= limit, limit, Math.max(0, limit - current));
             } catch (RuntimeException exception) {
+                redisFallbackCounter.increment();
                 LOGGER.warn("Redis rate limiter unavailable; falling back to MySQL: {}", exception.getMessage());
             }
+        }
+        if (redisEnabled && redisTemplate == null) {
+            redisFallbackCounter.increment();
         }
         return acquireFromDatabase(appKey, limit, windowSecond);
     }

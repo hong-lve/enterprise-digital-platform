@@ -14,3 +14,9 @@ kubectl apply -k deploy/k8s/data-service-platform
 
 The monitoring resources require Prometheus Operator CRDs. Replace the sample
 GHCR image tags with immutable release tags in production.
+
+Replace `data-service.example.com` and the TLS secret in `ingress.yaml` before
+deployment. Production clusters should install External Secrets Operator and
+apply `external-secret.example.yaml` after mapping it to the enterprise Vault
+or cloud KMS; the literal `kubectl create secret` command is only a bootstrap
+option for development clusters.

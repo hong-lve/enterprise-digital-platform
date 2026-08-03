@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.company.dataops.dataservice.repository.RequestSecurityRepository;
 import com.company.dataops.dataservice.service.DistributedCircuitBreakerStore;
+import com.company.dataops.dataservice.service.DistributedConcurrencyStore;
 import java.time.Duration;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
@@ -55,6 +56,9 @@ class DataServiceInfrastructureIntegrationTest {
     @Autowired
     DistributedCircuitBreakerStore circuitStore;
 
+    @Autowired
+    DistributedConcurrencyStore concurrencyStore;
+
     @Test
     void appliesAllMigrationsAndUsesRedisRateLimiter() {
         Integer migrations = jdbcTemplate.queryForObject(
@@ -82,5 +86,22 @@ class DataServiceInfrastructureIntegrationTest {
         assertEquals(DistributedCircuitBreakerStore.Permit.REJECT, circuitStore.acquire(apiId, openDuration));
         circuitStore.success(apiId);
         assertEquals(DistributedCircuitBreakerStore.Permit.ALLOW, circuitStore.acquire(apiId, openDuration));
+    }
+
+    @Test
+    void enforcesAndReleasesGlobalConcurrencyLeases() {
+        Duration leaseDuration = Duration.ofSeconds(5);
+        DistributedConcurrencyStore.Lease first = concurrencyStore.acquire(992L, 2, leaseDuration);
+        DistributedConcurrencyStore.Lease second = concurrencyStore.acquire(992L, 2, leaseDuration);
+        DistributedConcurrencyStore.Lease rejected = concurrencyStore.acquire(992L, 2, leaseDuration);
+        assertTrue(first.acquired());
+        assertTrue(second.acquired());
+        assertFalse(rejected.acquired());
+
+        concurrencyStore.release(first);
+        DistributedConcurrencyStore.Lease replacement = concurrencyStore.acquire(992L, 2, leaseDuration);
+        assertTrue(replacement.acquired());
+        concurrencyStore.release(second);
+        concurrencyStore.release(replacement);
     }
 }

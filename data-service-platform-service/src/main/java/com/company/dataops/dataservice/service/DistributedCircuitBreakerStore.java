@@ -3,6 +3,8 @@ package com.company.dataops.dataservice.service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -34,19 +36,28 @@ public class DistributedCircuitBreakerStore {
     private final StringRedisTemplate redisTemplate;
     private final String prefix;
     private final boolean enabled;
+    private final Counter fallbackCounter;
 
     public DistributedCircuitBreakerStore(
         ObjectProvider<StringRedisTemplate> redisTemplate,
+        MeterRegistry meterRegistry,
         @Value("${platform.data-service.resilience.redis-prefix:data-service:circuit}") String prefix,
         @Value("${platform.data-service.resilience.redis-enabled:true}") boolean enabled
     ) {
         this.redisTemplate = redisTemplate.getIfAvailable();
         this.prefix = prefix;
         this.enabled = enabled;
+        this.fallbackCounter = Counter.builder("data_service_guardrail_fallback")
+            .tag("guardrail", "circuit_breaker")
+            .register(meterRegistry);
     }
 
     public Permit acquire(long apiId, Duration openDuration) {
-        if (!available()) {
+        if (!enabled) {
+            return Permit.LOCAL_FALLBACK;
+        }
+        if (redisTemplate == null) {
+            fallbackCounter.increment();
             return Permit.LOCAL_FALLBACK;
         }
         try {
@@ -71,6 +82,17 @@ public class DistributedCircuitBreakerStore {
         }
         try {
             redisTemplate.delete(List.of(failureKey(apiId), openKey(apiId), probeKey(apiId)));
+        } catch (RuntimeException exception) {
+            warn(exception);
+        }
+    }
+
+    public void cancelProbe(long apiId) {
+        if (!available()) {
+            return;
+        }
+        try {
+            redisTemplate.delete(probeKey(apiId));
         } catch (RuntimeException exception) {
             warn(exception);
         }
@@ -106,6 +128,7 @@ public class DistributedCircuitBreakerStore {
     private String probeKey(long apiId) { return prefix + ":" + apiId + ":probe"; }
 
     private void warn(RuntimeException exception) {
+        fallbackCounter.increment();
         LOGGER.warn("Redis circuit state unavailable; using local circuit state: {}", exception.getMessage());
     }
 

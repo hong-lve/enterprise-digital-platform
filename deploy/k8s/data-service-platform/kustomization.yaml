@@ -7,3 +7,5 @@ resources:
   - frontend.yaml
   - availability.yaml
   - monitoring.yaml
+  - ingress.yaml
+  - network-policy.yaml

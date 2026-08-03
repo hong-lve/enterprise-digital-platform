@@ -70,6 +70,8 @@ platform:
       max-concurrent-per-api: ${DATA_SERVICE_MAX_CONCURRENT_PER_API:20}
       failure-threshold: ${DATA_SERVICE_CIRCUIT_FAILURE_THRESHOLD:5}
       open-duration: ${DATA_SERVICE_CIRCUIT_OPEN_DURATION:30s}
+      global-max-concurrent-per-api: ${DATA_SERVICE_GLOBAL_MAX_CONCURRENT_PER_API:60}
+      concurrency-lease-duration: ${DATA_SERVICE_CONCURRENCY_LEASE_DURATION:30s}
       redis-prefix: ${DATA_SERVICE_CIRCUIT_REDIS_PREFIX:data-service:circuit}
       redis-enabled: ${DATA_SERVICE_CIRCUIT_REDIS_ENABLED:true}
     rate-limit:

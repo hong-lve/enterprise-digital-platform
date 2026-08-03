@@ -207,6 +207,7 @@ export default function RuntimeGovernance({ apis, canManage }: Props) {
         <div><span>命中 / 未命中</span><strong>{cache ? `${cache.hits} / ${cache.misses}` : '-'}</strong></div>
         <div><span>旧数据降级</span><strong>{cache?.staleFallbacks ?? '-'}</strong></div>
         <div><span>并发拒绝</span><strong>{resilience?.concurrencyRejected ?? '-'}</strong></div>
+        <div><span>全局并发拒绝</span><strong>{resilience?.globalConcurrencyRejected ?? '-'}</strong></div>
         <div><span>熔断拒绝</span><strong>{resilience?.circuitRejected ?? '-'}</strong></div>
         <Button icon={<ReloadOutlined />} loading={loading} onClick={load} title="刷新运行指标" />
       </div>

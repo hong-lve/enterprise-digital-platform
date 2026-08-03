@@ -53,3 +53,17 @@ spec:
             severity: critical
           annotations:
             summary: Data service backend is repeatedly restarting
+        - alert: DataServiceGuardrailDegraded
+          expr: increase(data_service_guardrail_fallback_total[5m]) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: A Redis-backed data service guardrail is using its fallback path
+        - alert: DataServiceGlobalConcurrencySaturated
+          expr: rate(data_service_global_concurrency_rejections_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Data service global concurrency limit is rejecting requests

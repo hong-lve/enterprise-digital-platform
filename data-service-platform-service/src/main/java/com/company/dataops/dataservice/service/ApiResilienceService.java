@@ -21,22 +21,32 @@ public class ApiResilienceService {
     private final ConcurrentHashMap<Long, ApiState> states = new ConcurrentHashMap<>();
     private final LongAdder concurrencyRejected = new LongAdder();
     private final LongAdder circuitRejected = new LongAdder();
+    private final LongAdder globalConcurrencyRejected = new LongAdder();
     private final int maxConcurrent;
     private final int failureThreshold;
     private final Duration openDuration;
     private final DistributedCircuitBreakerStore distributedStore;
+    private final DistributedConcurrencyStore concurrencyStore;
+    private final int globalMaxConcurrent;
+    private final Duration concurrencyLeaseDuration;
 
     @Autowired
     public ApiResilienceService(
         @Value("${platform.data-service.resilience.max-concurrent-per-api:20}") int maxConcurrent,
         @Value("${platform.data-service.resilience.failure-threshold:5}") int failureThreshold,
         @Value("${platform.data-service.resilience.open-duration:30s}") Duration openDuration,
-        DistributedCircuitBreakerStore distributedStore
+        DistributedCircuitBreakerStore distributedStore,
+        DistributedConcurrencyStore concurrencyStore,
+        @Value("${platform.data-service.resilience.global-max-concurrent-per-api:60}") int globalMaxConcurrent,
+        @Value("${platform.data-service.resilience.concurrency-lease-duration:30s}") Duration concurrencyLeaseDuration
     ) {
         this.maxConcurrent = Math.max(1, maxConcurrent);
         this.failureThreshold = Math.max(1, failureThreshold);
         this.openDuration = openDuration;
         this.distributedStore = distributedStore;
+        this.concurrencyStore = concurrencyStore;
+        this.globalMaxConcurrent = Math.max(1, globalMaxConcurrent);
+        this.concurrencyLeaseDuration = concurrencyLeaseDuration;
     }
 
     ApiResilienceService(int maxConcurrent, int failureThreshold, Duration openDuration) {
@@ -44,6 +54,9 @@ public class ApiResilienceService {
         this.failureThreshold = Math.max(1, failureThreshold);
         this.openDuration = openDuration;
         this.distributedStore = null;
+        this.concurrencyStore = null;
+        this.globalMaxConcurrent = this.maxConcurrent;
+        this.concurrencyLeaseDuration = Duration.ofSeconds(30);
     }
 
     public <T> T execute(long apiId, Supplier<T> supplier) {
@@ -62,9 +75,28 @@ public class ApiResilienceService {
                 "API 熔断保护中，请稍后重试"
             );
         }
+        DistributedConcurrencyStore.Lease concurrencyLease = concurrencyStore == null
+            ? DistributedConcurrencyStore.Lease.fallback()
+            : concurrencyStore.acquire(apiId, globalMaxConcurrent, concurrencyLeaseDuration);
+        if (!concurrencyLease.acquired()) {
+            if (probe && distributedStore != null) {
+                distributedStore.cancelProbe(apiId);
+            }
+            globalConcurrencyRejected.increment();
+            throw new ResponseStatusException(
+                HttpStatus.TOO_MANY_REQUESTS,
+                "API 全局并发请求已达到上限，请稍后重试"
+            );
+        }
         if (!state.bulkhead().tryAcquire()) {
             if (probe) {
                 state.halfOpenProbe().set(false);
+            }
+            if (concurrencyStore != null) {
+                concurrencyStore.release(concurrencyLease);
+            }
+            if (probe && distributedStore != null) {
+                distributedStore.cancelProbe(apiId);
             }
             concurrencyRejected.increment();
             throw new ResponseStatusException(
@@ -89,6 +121,9 @@ public class ApiResilienceService {
         } finally {
             state.active().decrementAndGet();
             state.bulkhead().release();
+            if (concurrencyStore != null) {
+                concurrencyStore.release(concurrencyLease);
+            }
             if (probe) {
                 state.halfOpenProbe().set(false);
             }
@@ -102,6 +137,7 @@ public class ApiResilienceService {
             .toList();
         return new ResilienceMetrics(
             concurrencyRejected.sum(),
+            globalConcurrencyRejected.sum(),
             circuitRejected.sum(),
             circuits
         );
@@ -185,6 +221,7 @@ public class ApiResilienceService {
 
     public record ResilienceMetrics(
         long concurrencyRejected,
+        long globalConcurrencyRejected,
         long circuitRejected,
         List<CircuitSnapshot> circuits
     ) {

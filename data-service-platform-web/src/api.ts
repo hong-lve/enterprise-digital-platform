@@ -393,6 +393,7 @@ export interface RuntimeSnapshot {
   };
   resilience: {
     concurrencyRejected: number;
+    globalConcurrencyRejected: number;
     circuitRejected: number;
     circuits: Array<{
       apiId: number;
