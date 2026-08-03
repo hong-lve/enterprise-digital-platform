@@ -21,6 +21,10 @@ class ApiLifecyclePolicyTest {
             ResponseStatusException.class,
             () -> policy.assertEditable("PENDING_APPROVAL")
         );
+        assertThrows(
+            ResponseStatusException.class,
+            () -> policy.assertEditable("CANARY")
+        );
         assertDoesNotThrow(() -> policy.assertEditable("DRAFT"));
     }
 

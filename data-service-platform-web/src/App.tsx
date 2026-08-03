@@ -81,6 +81,7 @@ const statusColors: Record<string, string> = {
   DRAFT: 'default',
   OFFLINE: 'warning',
   PENDING_APPROVAL: 'processing',
+  CANARY: 'cyan',
   REJECTED: 'error',
   ARCHIVED: 'warning'
 };
@@ -512,7 +513,7 @@ export default function App() {
                 dataSource={callLogs}
                 pagination={{ pageSize: 15, showSizeChanger: false }}
                 size="small"
-                scroll={{ x: 1100 }}
+                scroll={{ x: 1280 }}
                 columns={[
                   { title: '时间', dataIndex: 'occurredAt', width: 170, render: formatTime },
                   {
@@ -520,6 +521,22 @@ export default function App() {
                     dataIndex: 'testCall',
                     width: 90,
                     render: (value) => <Tag color={value ? 'blue' : 'purple'}>{value ? '调试' : '开放调用'}</Tag>
+                  },
+                  {
+                    title: '命中版本',
+                    width: 120,
+                    render: (_, row) => row.routedVersionNo
+                      ? (
+                        <Space size={4}>
+                          <span>v{row.routedVersionNo}</span>
+                          {row.rolloutVariant && (
+                            <Tag color={row.rolloutVariant === 'CANARY' ? 'blue' : 'default'}>
+                              {row.rolloutVariant}
+                            </Tag>
+                          )}
+                        </Space>
+                      )
+                      : '-'
                   },
                   { title: 'API 路径', dataIndex: 'apiPath', width: 220, render: (value) => <Typography.Text code>{value}</Typography.Text> },
                   { title: '应用', dataIndex: 'appKey', width: 130, render: (value) => value || '-' },
@@ -707,6 +724,7 @@ export default function App() {
       <ApiVersionDrawer
         api={versionApi}
         user={user}
+        applications={applications}
         canApprove={hasPermission('API_APPROVE')}
         onClose={() => setVersionApi(null)}
         onChanged={load}

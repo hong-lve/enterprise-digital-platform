@@ -94,7 +94,7 @@ export interface DataApiRecord {
   parameters: ApiParameter[];
   status: 'DRAFT' | 'PUBLISHED' | 'OFFLINE';
   version: number;
-  latestVersionStatus: 'DRAFT' | 'PENDING_APPROVAL' | 'REJECTED' | 'PUBLISHED' | 'ARCHIVED';
+  latestVersionStatus: 'DRAFT' | 'PENDING_APPROVAL' | 'REJECTED' | 'PUBLISHED' | 'CANARY' | 'ARCHIVED';
   publishedVersion?: number;
   cacheTtlSeconds?: number;
   maxPageSize: number;
@@ -116,7 +116,7 @@ export interface ApiVersionRecord {
   parameters: ApiParameter[];
   cacheTtlSeconds?: number;
   maxPageSize: number;
-  status: 'DRAFT' | 'PENDING_APPROVAL' | 'REJECTED' | 'PUBLISHED' | 'ARCHIVED';
+  status: 'DRAFT' | 'PENDING_APPROVAL' | 'REJECTED' | 'PUBLISHED' | 'CANARY' | 'ARCHIVED';
   changeSummary?: string;
   createdBy: string;
   submittedBy?: string;
@@ -129,9 +129,146 @@ export interface ApiVersionRecord {
   createdAt: string;
 }
 
+export interface ContractFinding {
+  level: 'INFO' | 'RISKY' | 'BREAKING';
+  code: string;
+  subject: string;
+  message: string;
+}
+
+export interface ContractReport {
+  id: number;
+  apiId: number;
+  versionNo: number;
+  baselineVersionNo?: number;
+  severity: 'COMPATIBLE' | 'RISKY' | 'BREAKING';
+  findings: ContractFinding[];
+  generatedAt: string;
+}
+
+export interface ContractAssertion {
+  type: 'ROW_COUNT_MIN' | 'ROW_COUNT_MAX' | 'MAX_ELAPSED_MS'
+    | 'FIELD_EXISTS' | 'FIELD_NOT_NULL' | 'FIELD_TYPE' | 'FIELD_EQUALS';
+  field?: string;
+  expected?: string;
+}
+
+export interface ContractTestCase {
+  id: number;
+  apiId: number;
+  name: string;
+  enabled: boolean;
+  parameters: Record<string, unknown>;
+  page: number;
+  pageSize: number;
+  assertions: ContractAssertion[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContractTestRun {
+  id: number;
+  caseId: number;
+  apiId: number;
+  versionNo: number;
+  status: 'PASSED' | 'FAILED' | 'ERROR';
+  elapsedMs?: number;
+  rowCount?: number;
+  failureMessage?: string;
+  runBy: string;
+  runAt: string;
+}
+
+export interface ApiRolloutRecord {
+  id: number;
+  apiId: number;
+  baselineVersionNo: number;
+  candidateVersionNo: number;
+  percentage: number;
+  automated: boolean;
+  stages: RolloutStage[];
+  currentStageIndex: number;
+  stageStartedAt?: string;
+  nextEvaluationAt?: string;
+  healthPolicy?: RolloutHealthPolicy;
+  failureAction: 'PAUSE' | 'ROLLBACK';
+  pausedReason?: string;
+  pausedBy?: string;
+  pausedAt?: string;
+  applicationIds: number[];
+  ipRules: string[];
+  status: 'ACTIVE' | 'PAUSED' | 'PROMOTED' | 'ROLLED_BACK';
+  note?: string;
+  startedBy: string;
+  startedAt: string;
+  updatedBy: string;
+  updatedAt: string;
+  finishedBy?: string;
+  finishedAt?: string;
+}
+
+export interface RolloutStage {
+  percentage: number;
+  observationMinutes: number;
+}
+
+export interface RolloutHealthPolicy {
+  minimumRequests: number;
+  minimumSuccessRate: number;
+  maximumErrorRate: number;
+  maximumP95Ms: number;
+  maximumP99Ms: number;
+}
+
+export interface RolloutHealthSnapshot {
+  requestCount: number;
+  successCount: number;
+  errorCount: number;
+  successRate: number;
+  errorRate: number;
+  averageElapsedMs: number;
+  p95ElapsedMs: number;
+  p99ElapsedMs: number;
+  windowStartedAt: string;
+}
+
+export interface RolloutEventRecord {
+  id: number;
+  rolloutId: number;
+  eventType: string;
+  stageIndex?: number;
+  percentage?: number;
+  message: string;
+  actor: string;
+  details: Record<string, unknown>;
+  occurredAt: string;
+}
+
+export interface RolloutVariantMetrics {
+  variant: 'STABLE' | 'CANARY';
+  versionNo: number;
+  requestCount: number;
+  successCount: number;
+  errorCount: number;
+  successRate: number;
+  averageElapsedMs: number;
+  maximumElapsedMs: number;
+}
+
+export interface ApiRolloutDetail {
+  rollouts: ApiRolloutRecord[];
+  metrics: RolloutVariantMetrics[];
+  health?: RolloutHealthSnapshot;
+  events: RolloutEventRecord[];
+}
+
 export interface CallLogRecord {
   id: number;
   apiId?: number;
+  routedVersionNo?: number;
+  rolloutId?: number;
+  rolloutVariant?: 'STABLE' | 'CANARY';
   requestId?: string;
   traceId?: string;
   appKey?: string;
@@ -547,6 +684,112 @@ export function rollbackApiVersion(id: number, versionNo: number, changeSummary:
       `/apis/${id}/versions/${versionNo}/rollback`,
       { changeSummary }
     )
+    .then(unwrap);
+}
+
+export function getContractReport(apiId: number, versionNo: number) {
+  return admin
+    .get<ApiResponse<ContractReport>>(`/contract-governance/apis/${apiId}/versions/${versionNo}/report`)
+    .then(unwrap);
+}
+
+export function analyzeContract(apiId: number, versionNo: number) {
+  return admin
+    .post<ApiResponse<ContractReport>>(`/contract-governance/apis/${apiId}/versions/${versionNo}/analyze`)
+    .then(unwrap);
+}
+
+export function listContractTestCases(apiId: number) {
+  return admin
+    .get<ApiResponse<ContractTestCase[]>>(`/contract-governance/apis/${apiId}/cases`)
+    .then(unwrap);
+}
+
+export function saveContractTestCase(
+  apiId: number,
+  caseId: number | undefined,
+  payload: Omit<ContractTestCase, 'id' | 'apiId' | 'createdBy' | 'createdAt' | 'updatedAt'>
+) {
+  return caseId
+    ? admin.put<ApiResponse<ContractTestCase>>(`/contract-governance/apis/${apiId}/cases/${caseId}`, payload).then(unwrap)
+    : admin.post<ApiResponse<ContractTestCase>>(`/contract-governance/apis/${apiId}/cases`, payload).then(unwrap);
+}
+
+export function runContractTestCase(apiId: number, caseId: number, versionNo: number) {
+  return admin
+    .post<ApiResponse<ContractTestRun>>(
+      `/contract-governance/apis/${apiId}/cases/${caseId}/run`,
+      undefined,
+      { params: { versionNo } }
+    )
+    .then(unwrap);
+}
+
+export function listContractTestRuns(apiId: number) {
+  return admin
+    .get<ApiResponse<ContractTestRun[]>>(`/contract-governance/apis/${apiId}/runs`)
+    .then(unwrap);
+}
+
+export function getApiRollouts(apiId: number) {
+  return admin
+    .get<ApiResponse<ApiRolloutDetail>>(`/rollouts/apis/${apiId}`)
+    .then(unwrap);
+}
+
+export function startApiRollout(
+  apiId: number,
+  payload: {
+    candidateVersionNo: number;
+    percentage: number;
+    applicationIds: number[];
+    ipRules: string[];
+    note?: string;
+    stages?: RolloutStage[];
+    healthPolicy?: RolloutHealthPolicy;
+    failureAction?: 'PAUSE' | 'ROLLBACK';
+  }
+) {
+  return admin
+    .post<ApiResponse<ApiRolloutRecord>>(`/rollouts/apis/${apiId}`, payload)
+    .then(unwrap);
+}
+
+export function updateApiRollout(
+  rolloutId: number,
+  payload: {
+    percentage: number;
+    applicationIds: number[];
+    ipRules: string[];
+    note?: string;
+  }
+) {
+  return admin
+    .put<ApiResponse<ApiRolloutRecord>>(`/rollouts/${rolloutId}`, payload)
+    .then(unwrap);
+}
+
+export function promoteApiRollout(rolloutId: number) {
+  return admin
+    .post<ApiResponse<DataApiRecord>>(`/rollouts/${rolloutId}/promote`)
+    .then(unwrap);
+}
+
+export function rollbackApiRollout(rolloutId: number) {
+  return admin
+    .post<ApiResponse<ApiRolloutRecord>>(`/rollouts/${rolloutId}/rollback`)
+    .then(unwrap);
+}
+
+export function pauseApiRollout(rolloutId: number, reason?: string) {
+  return admin
+    .post<ApiResponse<ApiRolloutRecord>>(`/rollouts/${rolloutId}/pause`, { reason })
+    .then(unwrap);
+}
+
+export function resumeApiRollout(rolloutId: number) {
+  return admin
+    .post<ApiResponse<ApiRolloutRecord>>(`/rollouts/${rolloutId}/resume`)
     .then(unwrap);
 }
 

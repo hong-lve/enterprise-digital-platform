@@ -26,15 +26,12 @@ public class DeveloperPortalController {
 
     @GetMapping("/apis")
     public ApiResponse<List<DataApiRecord>> catalog() {
-        return ApiResponse.ok(repository.findAll().stream()
-            .filter(api -> "PUBLISHED".equals(api.status()))
-            .toList());
+        return ApiResponse.ok(repository.findPublishedAll());
     }
 
     @GetMapping("/apis/{id}/openapi")
     public ApiResponse<Map<String, Object>> openApiDocument(@PathVariable long id) {
-        DataApiRecord api = repository.findById(id)
-            .filter(item -> "PUBLISHED".equals(item.status()))
+        DataApiRecord api = repository.findPublishedById(id)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Published API not found"));
         return ApiResponse.ok(buildDocument(api));
     }
@@ -44,6 +41,12 @@ public class DeveloperPortalController {
         operation.put("summary", api.name());
         operation.put("description", api.description() == null ? "" : api.description());
         operation.put("operationId", "dataServiceApi" + api.id());
+        operation.put("security", List.of(Map.of(
+            "AppKey", List.of(),
+            "Timestamp", List.of(),
+            "Nonce", List.of(),
+            "Signature", List.of()
+        )));
 
         List<Map<String, Object>> parameters = new ArrayList<>();
         Map<String, Object> bodyProperties = new LinkedHashMap<>();
@@ -93,8 +96,18 @@ public class DeveloperPortalController {
                 "description", api.description() == null ? "" : api.description()
             ),
             "servers", List.of(Map.of("url", "/openapi")),
+            "components", Map.of("securitySchemes", Map.of(
+                "AppKey", apiKeyHeader("X-App-Key"),
+                "Timestamp", apiKeyHeader("X-Timestamp"),
+                "Nonce", apiKeyHeader("X-Nonce"),
+                "Signature", apiKeyHeader("X-Signature")
+            )),
             "paths", Map.of(api.path(), Map.of(api.method().toLowerCase(), operation))
         );
+    }
+
+    private Map<String, Object> apiKeyHeader(String name) {
+        return Map.of("type", "apiKey", "in", "header", "name", name);
     }
 
     private Map<String, Object> schema(String type) {

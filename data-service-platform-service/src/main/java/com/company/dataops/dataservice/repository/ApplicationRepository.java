@@ -125,6 +125,12 @@ public class ApplicationRepository {
         }
         jdbcTemplate.update("""
             UPDATE data_service_app_secret
+            SET status = 'REVOKED', revoked_by = ?, revoked_at = CURRENT_TIMESTAMP,
+                expires_at = CURRENT_TIMESTAMP
+            WHERE app_id = ? AND status = 'GRACE'
+            """, actor, id);
+        jdbcTemplate.update("""
+            UPDATE data_service_app_secret
             SET status = 'GRACE', expires_at = ?
             WHERE app_id = ? AND status = 'ACTIVE'
             """, Timestamp.from(Instant.now().plus(gracePeriod)), id);

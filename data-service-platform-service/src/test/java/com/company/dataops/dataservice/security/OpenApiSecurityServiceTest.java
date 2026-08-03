@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.company.dataops.dataservice.repository.ApplicationRepository;
@@ -23,13 +24,14 @@ class OpenApiSecurityServiceTest {
 
     private ApplicationRepository applicationRepository;
     private RequestSecurityRepository requestSecurityRepository;
+    private SecretCryptoService cryptoService;
     private OpenApiSecurityService service;
 
     @BeforeEach
     void setUp() {
         applicationRepository = mock(ApplicationRepository.class);
         requestSecurityRepository = mock(RequestSecurityRepository.class);
-        SecretCryptoService cryptoService = mock(SecretCryptoService.class);
+        cryptoService = mock(SecretCryptoService.class);
         service = new OpenApiSecurityService(
             applicationRepository,
             requestSecurityRepository,
@@ -57,6 +59,56 @@ class OpenApiSecurityServiceTest {
         OpenApiSecurityService.AuthenticationResult result = service.authenticate(request);
         assertEquals(7L, result.appId());
         assertEquals(49, result.remaining());
+        assertEquals(1, result.secretVersion());
+        verify(applicationRepository).markSecretUsed(10L);
+    }
+
+    @Test
+    void acceptsGracePeriodSecretWithoutVersionHeader() {
+        String oldSecret = "old-secret-with-enough-entropy";
+        when(applicationRepository.findUsableSecrets(APP_KEY, null)).thenReturn(List.of(
+            new ApplicationRepository.UsableApplicationSecret(
+                7L, APP_KEY, "ENABLED", 50, 20L, 2, "new-ciphertext"
+            ),
+            new ApplicationRepository.UsableApplicationSecret(
+                7L, APP_KEY, "ENABLED", 50, 10L, 1, "old-ciphertext"
+            )
+        ));
+        when(cryptoService.decrypt("new-ciphertext")).thenReturn("new-secret-with-enough-entropy");
+        when(cryptoService.decrypt("old-ciphertext")).thenReturn(oldSecret);
+        String timestamp = String.valueOf(Instant.now().toEpochMilli());
+        OpenApiSecurityService.SignedRequest unsigned = unsignedRequest(
+            timestamp,
+            "nonce_5234567890123456",
+            null
+        );
+        OpenApiSecurityService.SignedRequest signed = withSignature(unsigned, oldSecret);
+
+        OpenApiSecurityService.AuthenticationResult result = service.authenticate(signed);
+
+        assertEquals(1, result.secretVersion());
+        verify(applicationRepository).markSecretUsed(10L);
+    }
+
+    @Test
+    void requestedVersionOnlyUsesThatCredential() {
+        when(applicationRepository.findUsableSecrets(APP_KEY, 2)).thenReturn(List.of(
+            new ApplicationRepository.UsableApplicationSecret(
+                7L, APP_KEY, "ENABLED", 50, 20L, 2, "new-ciphertext"
+            )
+        ));
+        when(cryptoService.decrypt("new-ciphertext")).thenReturn("new-secret-with-enough-entropy");
+        String timestamp = String.valueOf(Instant.now().toEpochMilli());
+        OpenApiSecurityService.SignedRequest unsigned = unsignedRequest(
+            timestamp,
+            "nonce_6234567890123456",
+            "2"
+        );
+
+        assertThrows(
+            GatewaySecurityException.class,
+            () -> service.authenticate(withSignature(unsigned, SECRET))
+        );
     }
 
     @Test
@@ -100,7 +152,15 @@ class OpenApiSecurityServiceTest {
     }
 
     private OpenApiSecurityService.SignedRequest signedRequest(String timestamp, String nonce) {
-        OpenApiSecurityService.SignedRequest unsigned = new OpenApiSecurityService.SignedRequest(
+        return withSignature(unsignedRequest(timestamp, nonce, null), SECRET);
+    }
+
+    private OpenApiSecurityService.SignedRequest unsignedRequest(
+        String timestamp,
+        String nonce,
+        String secretVersion
+    ) {
+        return new OpenApiSecurityService.SignedRequest(
             "GET",
             "/openapi/governance/call-logs",
             "page=1&pageSize=20",
@@ -109,8 +169,14 @@ class OpenApiSecurityServiceTest {
             OpenApiSecurityService.sha256Hex(new byte[0]),
             APP_KEY,
             "",
-            null
+            secretVersion
         );
+    }
+
+    private OpenApiSecurityService.SignedRequest withSignature(
+        OpenApiSecurityService.SignedRequest unsigned,
+        String secret
+    ) {
         return new OpenApiSecurityService.SignedRequest(
             unsigned.method(),
             unsigned.path(),
@@ -119,8 +185,8 @@ class OpenApiSecurityServiceTest {
             unsigned.nonce(),
             unsigned.bodySha256(),
             unsigned.appKey(),
-            OpenApiSecurityService.hmacSha256Hex(SECRET, OpenApiSecurityService.canonicalRequest(unsigned)),
-            null
+            OpenApiSecurityService.hmacSha256Hex(secret, OpenApiSecurityService.canonicalRequest(unsigned)),
+            unsigned.secretVersion()
         );
     }
 }

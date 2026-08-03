@@ -8,18 +8,24 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class OpenApiSecurityService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(OpenApiSecurityService.class);
     private final ApplicationRepository applicationRepository;
     private final RequestSecurityRepository requestSecurityRepository;
     private final SecretCryptoService cryptoService;
     private final Duration timestampSkew;
+    private final Map<Long, Instant> secretUsageTouches = new ConcurrentHashMap<>();
 
     public OpenApiSecurityService(
         ApplicationRepository applicationRepository,
@@ -75,12 +81,11 @@ public class OpenApiSecurityService {
         if (matched == null) {
             throw unauthorized("请求签名不正确");
         }
-        applicationRepository.markSecretUsed(matched.secretId());
-
         Instant nonceExpiry = Instant.ofEpochMilli(timestamp).plus(timestampSkew);
         if (!requestSecurityRepository.registerNonce(application.appKey(), request.nonce(), nonceExpiry)) {
             throw unauthorized("请求随机数已使用，疑似重放请求");
         }
+        touchSecretUsage(matched.secretId());
 
         int qpsLimit = Math.max(1, application.qpsLimit());
         RequestSecurityRepository.RateLimitDecision rateLimit = requestSecurityRepository.acquire(
@@ -149,6 +154,21 @@ public class OpenApiSecurityService {
             return version;
         } catch (NumberFormatException exception) {
             throw unauthorized("X-Secret-Version 格式不正确");
+        }
+    }
+
+    private void touchSecretUsage(long secretId) {
+        Instant now = Instant.now();
+        try {
+            secretUsageTouches.compute(secretId, (ignored, lastTouch) -> {
+                if (lastTouch == null || lastTouch.isBefore(now.minusSeconds(60))) {
+                    applicationRepository.markSecretUsed(secretId);
+                    return now;
+                }
+                return lastTouch;
+            });
+        } catch (RuntimeException exception) {
+            LOGGER.warn("Unable to update last-used time for application secret {}", secretId);
         }
     }
 

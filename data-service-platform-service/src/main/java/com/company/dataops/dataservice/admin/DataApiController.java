@@ -9,6 +9,9 @@ import com.company.dataops.dataservice.domain.ExecutionResult;
 import com.company.dataops.dataservice.repository.DataApiRepository;
 import com.company.dataops.dataservice.repository.DatasetRepository;
 import com.company.dataops.dataservice.service.ApiExecutionService;
+import com.company.dataops.dataservice.service.ApiReleaseGateService;
+import com.company.dataops.dataservice.service.ApiRolloutService;
+import com.company.dataops.dataservice.service.ContractGovernanceService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -36,15 +39,24 @@ public class DataApiController {
     private final DataApiRepository repository;
     private final DatasetRepository datasetRepository;
     private final ApiExecutionService executionService;
+    private final ContractGovernanceService contractGovernanceService;
+    private final ApiReleaseGateService releaseGateService;
+    private final ApiRolloutService rolloutService;
 
     public DataApiController(
         DataApiRepository repository,
         DatasetRepository datasetRepository,
-        ApiExecutionService executionService
+        ApiExecutionService executionService,
+        ContractGovernanceService contractGovernanceService,
+        ApiReleaseGateService releaseGateService,
+        ApiRolloutService rolloutService
     ) {
         this.repository = repository;
         this.datasetRepository = datasetRepository;
         this.executionService = executionService;
+        this.contractGovernanceService = contractGovernanceService;
+        this.releaseGateService = releaseGateService;
+        this.rolloutService = rolloutService;
     }
 
     @GetMapping
@@ -123,6 +135,13 @@ public class DataApiController {
     ) {
         DataApiRecord api = requireApi(id);
         executionService.validateDefinition(api);
+        var report = contractGovernanceService.analyze(id, api.version());
+        if (report.breaking()) {
+            throw new ResponseStatusException(
+                HttpStatus.CONFLICT,
+                "检测到破坏性契约变更，请创建新的 API 路径或恢复兼容定义"
+            );
+        }
         return ApiResponse.ok(repository.submitForApproval(id, actor(authentication)));
     }
 
@@ -138,7 +157,8 @@ public class DataApiController {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "API 版本不存在"));
         String action = request.action().toUpperCase(Locale.ROOT);
         if ("APPROVE".equals(action)) {
-            executionService.validateDefinition(version.asApi(api));
+            rolloutService.assertNoActive(id);
+            releaseGateService.verify(api, version, actor(authentication));
             return ApiResponse.ok(repository.approve(
                 id, versionNo, actor(authentication), request.comment()
             ));
@@ -162,6 +182,7 @@ public class DataApiController {
         Authentication authentication
     ) {
         DataApiRecord api = requireApi(id);
+        rolloutService.assertNoActive(id);
         ApiVersionRecord source = repository.findVersion(id, versionNo)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "历史版本不存在"));
         executionService.validateDefinition(source.asApi(api));
@@ -179,6 +200,7 @@ public class DataApiController {
         @Valid @RequestBody ChangeStatusRequest request
     ) {
         requireApi(id);
+        rolloutService.assertNoActive(id);
         if (!"OFFLINE".equalsIgnoreCase(request.action())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "发布必须提交审批，状态接口只支持 OFFLINE");
         }

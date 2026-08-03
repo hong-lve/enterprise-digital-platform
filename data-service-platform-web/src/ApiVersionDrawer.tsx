@@ -2,6 +2,7 @@ import {
   CheckCircleOutlined,
   DiffOutlined,
   RollbackOutlined,
+  SafetyCertificateOutlined,
   StopOutlined
 } from '@ant-design/icons';
 import {
@@ -20,17 +21,23 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import {
   errorMessage,
+  getContractReport,
   listApiVersions,
   reviewApiVersion,
   rollbackApiVersion,
   type AdminUser,
   type ApiVersionRecord,
+  type ApplicationRecord,
+  type ContractReport,
   type DataApiRecord
 } from './api';
+import CanaryRolloutManagement from './CanaryRolloutManagement';
+import ContractTestManagement from './ContractTestManagement';
 
 interface Props {
   api: DataApiRecord | null;
   user: AdminUser;
+  applications: ApplicationRecord[];
   canApprove: boolean;
   onClose: () => void;
   onChanged: () => Promise<void>;
@@ -39,6 +46,7 @@ interface Props {
 const statusColor: Record<string, string> = {
   DRAFT: 'default',
   PENDING_APPROVAL: 'processing',
+  CANARY: 'cyan',
   REJECTED: 'error',
   PUBLISHED: 'success',
   ARCHIVED: 'warning'
@@ -47,6 +55,7 @@ const statusColor: Record<string, string> = {
 export default function ApiVersionDrawer({
   api,
   user,
+  applications,
   canApprove,
   onClose,
   onChanged
@@ -57,6 +66,7 @@ export default function ApiVersionDrawer({
   const [reviewVersion, setReviewVersion] = useState<ApiVersionRecord | null>(null);
   const [reviewAction, setReviewAction] = useState<'APPROVE' | 'REJECT'>('APPROVE');
   const [rollbackVersion, setRollbackVersion] = useState<ApiVersionRecord | null>(null);
+  const [contractReport, setContractReport] = useState<ContractReport | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [reviewForm] = Form.useForm();
   const [rollbackForm] = Form.useForm();
@@ -127,6 +137,18 @@ export default function ApiVersionDrawer({
     reviewForm.resetFields();
   };
 
+  const openContractReport = async (version: ApiVersionRecord) => {
+    if (!api) return;
+    setLoading(true);
+    try {
+      setContractReport(await getContractReport(api.id, version.versionNo));
+    } catch (error) {
+      message.error(errorMessage(error, '加载契约报告失败'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
       <Drawer
@@ -167,9 +189,12 @@ export default function ApiVersionDrawer({
             {
               title: '操作',
               fixed: 'right',
-              width: 280,
+              width: 350,
               render: (_, row) => (
                 <Space size={0}>
+                  <Button type="link" icon={<SafetyCertificateOutlined />} onClick={() => openContractReport(row)}>
+                    契约
+                  </Button>
                   <Button type="link" icon={<DiffOutlined />} onClick={() => setCompareVersion(row)}>
                     对比
                   </Button>
@@ -193,7 +218,65 @@ export default function ApiVersionDrawer({
             }
           ]}
         />
+        {api && (
+          <CanaryRolloutManagement
+            api={api}
+            versions={versions}
+            applications={applications}
+            canRead={user.permissions.includes('CANARY_READ')}
+            canManage={user.permissions.includes('CANARY_MANAGE')}
+            onChanged={refresh}
+          />
+        )}
+        {api && (
+          <ContractTestManagement
+            api={api}
+            versions={versions}
+            canManage={user.permissions.includes('CONTRACT_TEST_MANAGE')}
+          />
+        )}
       </Drawer>
+
+      <Modal
+        title={`契约兼容性报告 · v${contractReport?.versionNo || ''}`}
+        open={Boolean(contractReport)}
+        onCancel={() => setContractReport(null)}
+        footer={<Button onClick={() => setContractReport(null)}>关闭</Button>}
+        width={780}
+      >
+        {contractReport && (
+          <>
+            <Descriptions size="small" bordered column={2}>
+              <Descriptions.Item label="检查结果">
+                <Tag color={contractReport.severity === 'BREAKING' ? 'error' : contractReport.severity === 'RISKY' ? 'warning' : 'success'}>
+                  {contractReport.severity}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="基线版本">
+                {contractReport.baselineVersionNo ? `v${contractReport.baselineVersionNo}` : '首次发布'}
+              </Descriptions.Item>
+            </Descriptions>
+            <Table
+              rowKey={(row) => `${row.code}-${row.subject}`}
+              dataSource={contractReport.findings}
+              pagination={false}
+              size="small"
+              className="contract-findings"
+              columns={[
+                {
+                  title: '级别',
+                  dataIndex: 'level',
+                  width: 100,
+                  render: (value) => <Tag color={value === 'BREAKING' ? 'error' : value === 'RISKY' ? 'warning' : 'blue'}>{value}</Tag>
+                },
+                { title: '对象', dataIndex: 'subject', width: 160 },
+                { title: '检查项', dataIndex: 'code', width: 200 },
+                { title: '说明', dataIndex: 'message' }
+              ]}
+            />
+          </>
+        )}
+      </Modal>
 
       <Modal
         title={`版本对比 · v${compareVersion?.versionNo || ''} vs 线上 v${published?.versionNo || '-'}`}

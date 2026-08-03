@@ -1,8 +1,7 @@
 import {
   BookOutlined,
   CopyOutlined,
-  DownloadOutlined,
-  FileTextOutlined
+  DownloadOutlined
 } from '@ant-design/icons';
 import {
   Button,
@@ -94,7 +93,7 @@ export default function DeveloperPortal({ applications }: Props) {
   };
 
   const samples = documentApi && selectedApp
-    ? buildSamples(documentApi, selectedApp.appKey)
+    ? buildSamples(documentApi, selectedApp.appKey, selectedApp.secretVersion)
     : null;
 
   return (
@@ -271,7 +270,7 @@ export default function DeveloperPortal({ applications }: Props) {
   );
 }
 
-function buildSamples(api: DataApiRecord, appKey: string): Record<SampleLanguage, string> {
+function buildSamples(api: DataApiRecord, appKey: string, secretVersion: number): Record<SampleLanguage, string> {
   const path = `/openapi${api.path}`;
   const method = api.method.toUpperCase();
   return {
@@ -288,7 +287,7 @@ HttpRequest request = HttpRequest.newBuilder(URI.create(BASE_URL + "${path}"))
     .header("X-Timestamp", timestamp)
     .header("X-Nonce", nonce)
     .header("X-Signature", signature)
-    .header("X-Secret-Version", "CURRENT_VERSION")
+    .header("X-Secret-Version", "${secretVersion}")
     .method("${method}", HttpRequest.BodyPublishers.noBody())
     .build();`,
     Python: `import hashlib, hmac, os, time, uuid, requests
@@ -304,7 +303,8 @@ signature = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdig
 response = requests.${method.toLowerCase()}(
     BASE_URL + "${path}",
     headers={"X-App-Key": app_key, "X-Timestamp": timestamp,
-             "X-Nonce": nonce, "X-Signature": signature}
+             "X-Nonce": nonce, "X-Signature": signature,
+             "X-Secret-Version": "${secretVersion}"}
 )`,
     JavaScript: `import crypto from 'node:crypto';
 
@@ -319,7 +319,8 @@ const signature = crypto.createHmac('sha256', secret).update(canonical).digest('
 const response = await fetch(BASE_URL + '${path}', {
   method: '${method}',
   headers: { 'X-App-Key': appKey, 'X-Timestamp': timestamp,
-             'X-Nonce': nonce, 'X-Signature': signature }
+             'X-Nonce': nonce, 'X-Signature': signature,
+             'X-Secret-Version': '${secretVersion}' }
 });`
   };
 }

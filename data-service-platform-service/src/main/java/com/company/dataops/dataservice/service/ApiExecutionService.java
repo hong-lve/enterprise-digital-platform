@@ -98,6 +98,44 @@ public class ApiExecutionService {
         String clientIp,
         boolean testCall
     ) {
+        return executeInternal(
+            api, input, requestedPage, requestedPageSize, appKey, clientIp, testCall, null
+        );
+    }
+
+    public ExecutionResult executeRouted(
+        DataApiRecord api,
+        Map<String, Object> input,
+        Integer requestedPage,
+        Integer requestedPageSize,
+        String appKey,
+        String clientIp,
+        boolean testCall,
+        Long rolloutId,
+        String rolloutVariant
+    ) {
+        return executeInternal(
+            api,
+            input,
+            requestedPage,
+            requestedPageSize,
+            appKey,
+            clientIp,
+            testCall,
+            new RoutingMetadata(api.version(), rolloutId, rolloutVariant)
+        );
+    }
+
+    private ExecutionResult executeInternal(
+        DataApiRecord api,
+        Map<String, Object> input,
+        Integer requestedPage,
+        Integer requestedPageSize,
+        String appKey,
+        String clientIp,
+        boolean testCall,
+        RoutingMetadata routing
+    ) {
         String requestId = UUID.randomUUID().toString().replace("-", "");
         String traceId = currentTraceId();
         long startedAt = System.nanoTime();
@@ -153,8 +191,8 @@ public class ApiExecutionService {
             List<Map<String, Object>> rows = cacheOutcome.rows();
             rowCount = rows.size();
             long elapsedMs = elapsedMillis(startedAt);
-            callLogRepository.save(
-                api.id(), requestId, traceId, appKey, api.path(), api.method(), statusCode, elapsedMs,
+            saveCallLog(
+                api, routing, requestId, traceId, appKey, statusCode, elapsedMs,
                 rowCount, testCall, clientIp, null
             );
             metricsService.record(
@@ -177,13 +215,43 @@ public class ApiExecutionService {
             statusCode = exception instanceof ResponseStatusException response
                 ? response.getStatusCode().value()
                 : 500;
-            callLogRepository.save(
-                api.id(), requestId, traceId, appKey, api.path(), api.method(), statusCode, elapsedMillis(startedAt),
+            saveCallLog(
+                api, routing, requestId, traceId, appKey, statusCode, elapsedMillis(startedAt),
                 rowCount, testCall, clientIp, exception.getMessage()
             );
             metricsService.record(api.id(), statusCode, elapsedMillis(startedAt), null, false);
             throw exception;
         }
+    }
+
+    private void saveCallLog(
+        DataApiRecord api,
+        RoutingMetadata routing,
+        String requestId,
+        String traceId,
+        String appKey,
+        int statusCode,
+        long elapsedMs,
+        Integer rowCount,
+        boolean testCall,
+        String clientIp,
+        String errorMessage
+    ) {
+        if (routing == null) {
+            callLogRepository.save(
+                api.id(), requestId, traceId, appKey, api.path(), api.method(), statusCode,
+                elapsedMs, rowCount, testCall, clientIp, errorMessage
+            );
+            return;
+        }
+        callLogRepository.save(
+            api.id(), routing.versionNo(), routing.rolloutId(), routing.variant(),
+            requestId, traceId, appKey, api.path(), api.method(), statusCode, elapsedMs,
+            rowCount, testCall, clientIp, errorMessage
+        );
+    }
+
+    private record RoutingMetadata(Integer versionNo, Long rolloutId, String variant) {
     }
 
     private String validateSql(

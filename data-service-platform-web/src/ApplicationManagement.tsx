@@ -290,7 +290,11 @@ export default function ApplicationManagement({
               title: '状态',
               dataIndex: 'status',
               width: 100,
-              render: (value) => <Tag color={value === 'ACTIVE' ? 'success' : value === 'GRACE' ? 'processing' : 'default'}>{value}</Tag>
+              render: (value, row) => {
+                const expired = value === 'GRACE' && row.expiresAt && new Date(row.expiresAt) <= new Date();
+                const label = expired ? 'EXPIRED' : value;
+                return <Tag color={value === 'ACTIVE' ? 'success' : !expired && value === 'GRACE' ? 'processing' : 'default'}>{label}</Tag>;
+              }
             },
             { title: '宽限期截止', dataIndex: 'expiresAt', width: 180, render: (value) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-' },
             { title: '最后使用', dataIndex: 'lastUsedAt', width: 180, render: (value) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未使用' },

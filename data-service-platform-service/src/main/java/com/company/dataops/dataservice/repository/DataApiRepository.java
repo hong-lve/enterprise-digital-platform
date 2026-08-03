@@ -86,6 +86,21 @@ public class DataApiRepository {
         ).stream().findFirst();
     }
 
+    public List<DataApiRecord> findPublishedAll() {
+        return jdbcTemplate.query(
+            PUBLISHED_COLUMNS + " WHERE api.status = 'PUBLISHED' ORDER BY api.id DESC",
+            rowMapper
+        );
+    }
+
+    public Optional<DataApiRecord> findPublishedById(long id) {
+        return jdbcTemplate.query(
+            PUBLISHED_COLUMNS + " WHERE api.id = ? AND api.status = 'PUBLISHED'",
+            rowMapper,
+            id
+        ).stream().findFirst();
+    }
+
     public List<ApiVersionRecord> findVersions(long apiId) {
         return jdbcTemplate.query("""
             SELECT id, api_id, version_no, dataset_id, name, description, path, method,
@@ -217,6 +232,66 @@ public class DataApiRepository {
             """, reviewer, comment, version.id());
         applyVersionToApi(apiId, version, version.id(), "PUBLISHED");
         return findById(apiId).orElseThrow();
+    }
+
+    public ApiVersionRecord markCanary(
+        long apiId,
+        int versionNo,
+        String reviewer,
+        String comment
+    ) {
+        ApiVersionRecord version = requirePendingVersion(apiId, versionNo);
+        lifecyclePolicy.assertReviewable(version.status(), version.submittedBy(), reviewer);
+        jdbcTemplate.update("""
+            UPDATE data_service_api_version
+            SET status = 'CANARY', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP,
+                review_comment = ?
+            WHERE id = ?
+            """, reviewer, comment, version.id());
+        return findVersion(apiId, versionNo).orElseThrow();
+    }
+
+    @Transactional
+    public DataApiRecord promoteCanary(
+        long apiId,
+        int versionNo,
+        String reviewer,
+        String comment
+    ) {
+        ApiVersionRecord version = findVersion(apiId, versionNo)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "API version not found"));
+        if (!"CANARY".equals(version.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "API version is not in canary");
+        }
+        jdbcTemplate.update("""
+            UPDATE data_service_api_version
+            SET status = 'ARCHIVED'
+            WHERE api_id = ? AND status = 'PUBLISHED'
+            """, apiId);
+        jdbcTemplate.update("""
+            UPDATE data_service_api_version
+            SET status = 'PUBLISHED', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP,
+                review_comment = ?, published_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """, reviewer, comment, version.id());
+        ApiVersionRecord published = findVersion(apiId, versionNo).orElseThrow();
+        applyVersionToApi(apiId, published, version.id(), "PUBLISHED");
+        return findById(apiId).orElseThrow();
+    }
+
+    public ApiVersionRecord archiveCanary(long apiId, int versionNo, String actor) {
+        int updated = jdbcTemplate.update("""
+            UPDATE data_service_api_version
+            SET status = 'ARCHIVED', review_comment = CONCAT(
+                COALESCE(review_comment, ''), CASE WHEN review_comment IS NULL THEN '' ELSE '; ' END,
+                'Canary rolled back by ', ?
+            )
+            WHERE api_id = ? AND version_no = ? AND status = 'CANARY'
+            """, actor, apiId, versionNo);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Canary API version is not active");
+        }
+        return findVersion(apiId, versionNo).orElseThrow();
     }
 
     public ApiVersionRecord reject(long apiId, int versionNo, String reviewer, String comment) {

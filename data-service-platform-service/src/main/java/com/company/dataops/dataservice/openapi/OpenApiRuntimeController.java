@@ -7,6 +7,7 @@ import com.company.dataops.dataservice.repository.DataApiRepository;
 import com.company.dataops.dataservice.repository.CallLogRepository;
 import com.company.dataops.dataservice.security.OpenApiSecurityFilter;
 import com.company.dataops.dataservice.service.ApiExecutionService;
+import com.company.dataops.dataservice.service.ApiRolloutService;
 import com.company.dataops.dataservice.service.ApiSubscriptionService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -32,17 +33,20 @@ public class OpenApiRuntimeController {
     private final CallLogRepository callLogRepository;
     private final ApiExecutionService executionService;
     private final ApiSubscriptionService subscriptionService;
+    private final ApiRolloutService rolloutService;
 
     public OpenApiRuntimeController(
         DataApiRepository apiRepository,
         CallLogRepository callLogRepository,
         ApiExecutionService executionService,
-        ApiSubscriptionService subscriptionService
+        ApiSubscriptionService subscriptionService,
+        ApiRolloutService rolloutService
     ) {
         this.apiRepository = apiRepository;
         this.callLogRepository = callLogRepository;
         this.executionService = executionService;
         this.subscriptionService = subscriptionService;
+        this.rolloutService = rolloutService;
     }
 
     @GetMapping("/health")
@@ -88,6 +92,18 @@ public class OpenApiRuntimeController {
             throw exception;
         }
 
+        String appKey = String.valueOf(request.getAttribute(OpenApiSecurityFilter.ATTR_APP_KEY));
+        String clientIp = clientIp(request);
+        ApiRolloutService.RouteDecision route = rolloutService.route(
+            api, appId, appKey, clientIp
+        );
+        api = route.api();
+        response.setHeader("X-API-Version", String.valueOf(api.version()));
+        response.setHeader("X-Release-Variant", route.variant());
+        if (route.rolloutId() != null) {
+            response.setHeader("X-Rollout-Id", String.valueOf(route.rolloutId()));
+        }
+
         Map<String, String> query = new LinkedHashMap<>();
         queryParameters.forEach((name, values) -> {
             if (!values.isEmpty()) {
@@ -97,14 +113,16 @@ public class OpenApiRuntimeController {
         Map<String, String> headers = new LinkedHashMap<>();
         requestHeaders.forEach((name, value) -> headers.put(name.toLowerCase(Locale.ROOT), value));
         Map<String, Object> input = executionService.collectRuntimeInput(api, query, headers, requestBody);
-        return ApiResponse.ok(executionService.execute(
+        return ApiResponse.ok(executionService.executeRouted(
             api,
             input,
             parseInteger(query.get("page")),
             parseInteger(query.get("pageSize")),
-            String.valueOf(request.getAttribute(OpenApiSecurityFilter.ATTR_APP_KEY)),
-            clientIp(request),
-            false
+            appKey,
+            clientIp,
+            false,
+            route.rolloutId(),
+            route.variant()
         ));
     }
 

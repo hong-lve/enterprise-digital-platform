@@ -5,6 +5,9 @@ import java.time.Instant;
 public record CallLogRecord(
     Long id,
     Long apiId,
+    Integer routedVersionNo,
+    Long rolloutId,
+    String rolloutVariant,
     String requestId,
     String traceId,
     String appKey,

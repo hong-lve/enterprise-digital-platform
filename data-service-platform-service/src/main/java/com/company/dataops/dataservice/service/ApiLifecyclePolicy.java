@@ -10,8 +10,8 @@ public class ApiLifecyclePolicy {
     private static final Set<String> ROLLBACK_SOURCES = Set.of("PUBLISHED", "ARCHIVED");
 
     public void assertEditable(String latestVersionStatus) {
-        if ("PENDING_APPROVAL".equals(latestVersionStatus)) {
-            throw conflict("当前版本正在审批，不能继续修改");
+        if (Set.of("PENDING_APPROVAL", "CANARY").contains(latestVersionStatus)) {
+            throw conflict("当前版本正在审批或灰度发布，不能继续修改");
         }
     }
 

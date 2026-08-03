@@ -691,6 +691,187 @@ textarea {
   line-height: 1.6;
 }
 
+.contract-tests {
+  margin-top: 22px;
+  border-top: 1px solid #e5e8eb;
+}
+
+.contract-tests .governance-heading {
+  margin-top: 0;
+}
+
+.contract-run-heading {
+  margin: 18px 0 10px;
+}
+
+.contract-parameter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.assertion-list {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.assertion-row {
+  display: grid;
+  grid-template-columns: 180px 1fr 1fr 32px;
+  gap: 8px;
+  align-items: start;
+}
+
+.assertion-row .ant-form-item {
+  margin-bottom: 0;
+}
+
+.contract-findings {
+  margin-top: 14px;
+}
+
+.canary-rollouts {
+  margin-top: 22px;
+  border-top: 1px solid #e5e8eb;
+}
+
+.canary-rollouts .governance-heading {
+  margin-top: 0;
+}
+
+.canary-rollouts .governance-heading > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.canary-active {
+  padding: 14px 0;
+  border-bottom: 1px solid #eef0f2;
+}
+
+.canary-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(420px, 1.8fr);
+  gap: 20px;
+  align-items: center;
+}
+
+.canary-summary .ant-progress {
+  margin-top: 8px;
+}
+
+.canary-actions {
+  margin-top: 14px;
+}
+
+.canary-pause-reason {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  color: #8a4b00;
+  background: #fff7e6;
+  border-left: 3px solid #faad14;
+}
+
+.canary-empty {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  color: #6b7280;
+  border-bottom: 1px solid #eef0f2;
+}
+
+.canary-table-heading {
+  display: block;
+  margin: 16px 0 8px;
+}
+
+.canary-health-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(100px, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  background: #e5e8eb;
+  border: 1px solid #e5e8eb;
+}
+
+.canary-health-grid > div {
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.canary-health-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.canary-health-grid strong {
+  font-size: 16px;
+}
+
+.canary-timeline {
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 4px;
+}
+
+.canary-event > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.canary-event small {
+  display: block;
+  margin-top: 4px;
+  color: #8c8c8c;
+}
+
+.canary-automation-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 0;
+  border-top: 1px solid #eef0f2;
+  border-bottom: 1px solid #eef0f2;
+}
+
+.canary-stage-list {
+  display: grid;
+  gap: 8px;
+}
+
+.canary-stage-row {
+  display: grid;
+  grid-template-columns: 70px minmax(130px, 1fr) minmax(150px, 1fr) 32px;
+  gap: 8px;
+  align-items: start;
+}
+
+.canary-stage-row > span {
+  padding-top: 6px;
+  color: #6b7280;
+}
+
+.canary-stage-row .ant-form-item {
+  margin-bottom: 0;
+}
+
+.canary-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.ant-space-compact .ant-slider {
+  flex: 1;
+  min-width: 260px;
+  margin-right: 18px;
+}
+
 @media (max-width: 720px) {
   .policy-row {
     grid-template-columns: 1fr;
@@ -698,5 +879,22 @@ textarea {
 
   .runtime-summary {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .canary-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .canary-health-grid,
+  .canary-policy-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .canary-stage-row {
+    grid-template-columns: 1fr 1fr 32px;
+  }
+
+  .canary-stage-row > span {
+    grid-column: 1 / -1;
   }
 }
