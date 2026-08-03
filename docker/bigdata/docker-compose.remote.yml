@@ -1,4 +1,4 @@
-﻿# Minimal local test environment for Flink/Kafka/CDC/ClickHouse integration,
+# Minimal local test environment for Flink/Kafka/CDC/ClickHouse integration,
 # trimmed down from the upstream project's full Hive/Spark/Flink compose file.
 # This checkout only carries data-processing-platform-service + data-processing-platform-web - a
 # standalone app with its own local auth tables (see
@@ -14,7 +14,14 @@
 
 x-kafka-common-env: &kafka-common-env
   CLUSTER_ID: dfAMl01jQo2kDEJpXxMVfw
-  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka-2:9093,3@kafka-3:9093
+  # Trimmed from 3-broker to single-broker (2026-08-03): this Aliyun host's
+  # 14GB RAM couldn't hold the full 3x-replicated stack (3 Kafka brokers + 3
+  # Doris BEs + observability) even at idle - confirmed live via repeated
+  # OOM-driven Docker network attachment failures on kafka/kafka-2/kafka-3
+  # (empty IP in `docker network inspect`, breaking KRaft quorum DNS
+  # resolution). Single point of failure now, matching doris-be1-only below;
+  # scale back up only after moving to a bigger instance.
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
   KAFKA_PROCESS_ROLES: broker,controller
   # SSL replaces the listener named "PLAINTEXT" - it's both the inter-broker
   # replication listener (KAFKA_INTER_BROKER_LISTENER_NAME) AND the one every
@@ -66,11 +73,11 @@ x-kafka-common-env: &kafka-common-env
   # container recreation wiped it even though the "persistent" volume looked
   # untouched. Explicit log.dirs makes the mount actually mean something.
   KAFKA_LOG_DIRS: /var/lib/kafka/data
-  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+  KAFKA_MIN_INSYNC_REPLICAS: 1
   # Debezium's auto-created CDC topics inherited this cluster default
   # (previously unset, so Kafka's own hardcoded default of 1 applied) -
   # confirmed live that a single-partition CDC topic caps consumer
@@ -208,7 +215,8 @@ services:
         # container, so the Kafka SQL connector has to resolve here too.
       - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
         # Built from flink-connectors/clickhouse-jdbc-dialect - a JdbcDialect
-        # (via official flink-connector-jdbc's SPI) that lets SQL 流作�?        # declare a 'connector'='jdbc' sink pointed at ClickHouse. This jar
+        # (via official flink-connector-jdbc's SPI) that lets SQL 流作业
+        # declare a 'connector'='jdbc' sink pointed at ClickHouse. This jar
         # is now the cluster's only source of flink-connector-jdbc itself,
         # not just the ClickHouse dialect - see that module's pom.xml for
         # why its shade config merges rather than replaces the official
@@ -218,13 +226,13 @@ services:
         # connector-1.19), a prebuilt shaded jar - unlike ClickHouse this
         # didn't need a hand-written dialect, Doris's Unique Key model does
         # real upsert/delete at the storage layer itself. 'connector'='doris'
-        # in SQL 流作�? The doris service below is profile-gated (not part
+        # in SQL 流作业. The doris service below is profile-gated (not part
         # of the default `docker compose up -d`) - this jar can sit here
         # unused without hurting anything when that profile isn't running.
       - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
         # The clickhouse-jdbc-dialect jar above bundles flink-connector-jdbc's
         # generic 'connector'='jdbc' logic but not an actual JDBC driver class
-        # for MySQL - without this, a SQL 流作�?sink pointed at a MySQL
+        # for MySQL - without this, a SQL 流作业 sink pointed at a MySQL
         # data source would submit fine but fail at runtime with "no suitable
         # driver". Same jar this service's own JVM already depends on
         # (pom.xml), just also handed to the cluster containers that execute
@@ -286,7 +294,7 @@ services:
   # and batch/streaming jobs already compete for them. debezium-json format comes from
   # flink-json, already bundled in the base image's lib/ - only the Kafka SQL
   # connector needed adding. Scope is read-only interactive querying (CREATE
-  # TABLE mapping a Kafka topic + SELECT); "SQL 流作�? (data-platform-
+  # TABLE mapping a Kafka topic + SELECT); "SQL 流作业" (data-platform-
   # service's SQL-Gateway-submitted persistent jobs, a separate feature from
   # this read-only query workbench) can now write to ClickHouse too via the
   # clickhouse-jdbc-dialect jar below - hand-written jars like
@@ -362,37 +370,10 @@ services:
     ports:
       - "127.0.0.1:19092:9094" # host-reachable broker listener (kafka:9092 is the in-network one Kafka Connect/Kafka UI use)
 
-  kafka-2:
-    image: apache/kafka:3.7.0
-    container_name: bigdata-kafka-2
-    restart: unless-stopped
-    environment:
-      <<: *kafka-common-env
-      KAFKA_NODE_ID: 2
-      KAFKA_LISTENERS: SSL://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: SSL://kafka-2:9092
-      KAFKA_SSL_KEYSTORE_FILENAME: kafka-2.keystore.p12
-    volumes:
-      - kafka-2-data:/var/lib/kafka/data
-      - ./kafka-tls/certs/kafka-2.keystore.p12:/etc/kafka/secrets/kafka-2.keystore.p12:ro
-      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
-      - ./kafka-tls/certs/creds.txt:/etc/kafka/secrets/creds.txt:ro
-
-  kafka-3:
-    image: apache/kafka:3.7.0
-    container_name: bigdata-kafka-3
-    restart: unless-stopped
-    environment:
-      <<: *kafka-common-env
-      KAFKA_NODE_ID: 3
-      KAFKA_LISTENERS: SSL://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: SSL://kafka-3:9092
-      KAFKA_SSL_KEYSTORE_FILENAME: kafka-3.keystore.p12
-    volumes:
-      - kafka-3-data:/var/lib/kafka/data
-      - ./kafka-tls/certs/kafka-3.keystore.p12:/etc/kafka/secrets/kafka-3.keystore.p12:ro
-      - ./kafka-tls/certs/truststore.p12:/etc/kafka/secrets/truststore.p12:ro
-      - ./kafka-tls/certs/creds.txt:/etc/kafka/secrets/creds.txt:ro
+  # kafka-2/kafka-3 removed 2026-08-03 (trimmed to single-broker, see
+  # kafka-common-env's KAFKA_CONTROLLER_QUORUM_VOTERS comment above) - their
+  # cert files/volumes are left in place on disk in case this ever scales
+  # back up, just no longer referenced here.
 
   # ---------- Schema Registry ----------
   # Confluent's registry works against any Kafka broker over the plain
@@ -546,7 +527,8 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
 
-  # ---------- Oracle (Flink/SQL 流作�?sink target + CDC 数据�?+ "数据�?  # 配置" 里的 Oracle 类型现在有真实实例可�? ----------
+  # ---------- Oracle (Flink/SQL 流作业 sink target + CDC 数据源 + "数据源
+  # 配置" 里的 Oracle 类型现在有真实实例可用) ----------
   # gvenzl/oracle-free instead of the official Oracle Container Registry
   # image - the official one requires an Oracle account and `docker login
   # container-registry.oracle.com` before it can even be pulled; this
@@ -592,7 +574,7 @@ services:
     volumes:
       - oracle-data:/opt/oracle/oradata
 
-  # ---------- Redis (Flink/SQL 流作�?sink target + "数据源配�?/"实时数据
+  # ---------- Redis (Flink/SQL 流作业 sink target + "数据源配置/实时数据
   # 查询" 里的 Redis 类型) ----------
   # Single node, requirepass only (no ACL users beyond the built-in "default"
   # user) - matches this environment's "functional testing, not production"
@@ -610,7 +592,7 @@ services:
       - redis-data:/data
 
   # ---------- Doris (opt-in via --profile doris): 1 FE + 3 BE, all 2.1.11 ----------
-  # Alternative OLAP sink for "SQL 流作�? alongside ClickHouse - unlike
+  # Alternative OLAP sink for "SQL 流作业" alongside ClickHouse - unlike
   # ClickHouse, Doris's Unique Key model has real primary-key upsert
   # (including delete) at the storage layer, so a SQL job can mirror a CDC
   # changelog into it directly without the aggregate-before-sink workaround
@@ -657,8 +639,17 @@ services:
     # brain) but that needs a real metadata-freshening step first, not just
     # deleting the env var - tracked separately, not blocking the static-IP
     # fix here.
+    #
+    # NOTE (2026-08-03): this Aliyun server's doris-fe-meta volume was
+    # bootstrapped fresh (empty), where RECOVERY=true fails outright
+    # ("Cannot start in recovery mode: meta directory is empty or does not
+    # exist"). Election mode (FE_SERVERS/FE_ID below) is what's actually
+    # running here - only reach for RECOVERY=true again if adopting a volume
+    # that already has real metadata in it (e.g. restoring the old Vultr
+    # volume onto a new host).
     environment:
-      RECOVERY: "true"
+      FE_SERVERS: "fe1:172.18.0.240:9010"
+      FE_ID: "1"
     networks:
       default:
         ipv4_address: 172.18.0.240
@@ -697,35 +688,10 @@ services:
       - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
       - doris-be1-storage:/opt/apache-doris/be/storage
 
-  doris-be2:
-    image: apache/doris:be-2.1.11
-    container_name: bigdata-doris-be2
-    profiles: ["doris"]
-    restart: unless-stopped
-    depends_on:
-      - doris
-    entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
-    networks:
-      default:
-        ipv4_address: 172.18.0.242
-    volumes:
-      - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
-      - doris-be2-storage:/opt/apache-doris/be/storage
-
-  doris-be3:
-    image: apache/doris:be-2.1.11
-    container_name: bigdata-doris-be3
-    profiles: ["doris"]
-    restart: unless-stopped
-    depends_on:
-      - doris
-    entrypoint: ["/bin/bash", "/doris-be-entrypoint-wrapper.sh"]
-    networks:
-      default:
-        ipv4_address: 172.18.0.243
-    volumes:
-      - ./doris-be-entrypoint-wrapper.sh:/doris-be-entrypoint-wrapper.sh:ro
-      - doris-be3-storage:/opt/apache-doris/be/storage
+  # doris-be2/doris-be3 removed 2026-08-03 (trimmed to single-BE, same
+  # memory-pressure reasoning as the Kafka broker trim above) - only
+  # doris-be1 remains, so any table needing replication_num=3 won't work
+  # until this scales back up.
 
   # ---------- MinIO (S3-compatible object storage) ----------
   # Backs data-processing-platform-service's JarStorageService (uploaded Flink job
@@ -760,120 +726,24 @@ services:
   # mem_limit on all four - this whole stack runs on a resource-constrained
   # dev machine already juggling Kafka/Flink/Debezium, not a dedicated
   # observability host.
-  prometheus:
-    image: prom/prometheus:v2.53.0
-    container_name: bigdata-prometheus
-    restart: unless-stopped
-    mem_limit: 200m
-    # network_mode: host (not the usual bridge network + extra_hosts
-    # host-gateway mapping) - data-processing-platform-service moved to running purely
-    # locally while everything else here moved to a rented remote server
-    # (see docker/bigdata/README.md), which broke this scrape target:
-    # host.docker.internal now resolves to the remote host, which has
-    # nothing listening on 8085. The fix is a *reverse* SSH tunnel
-    # (-R 18085:127.0.0.1:8085, run alongside the existing forward tunnels)
-    # back from this host to the local machine - but that only ever binds
-    # to the remote host's own 127.0.0.1, not reachable from a container on
-    # the normal bridge network. Sharing the host's network namespace
-    # outright is what actually lets Prometheus reach it at 127.0.0.1:18085
-    # without needing sshd's GatewayPorts (a config change with real
-    # lock-yourself-out-of-the-server risk if it goes wrong, avoided here
-    # on purpose). Port 9090 is now bound directly on the host as a result -
-    # see prometheus.yml's data-processing-platform-service target and README.md's
-    # updated port table.
-    network_mode: host
-    volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-
-  loki:
-    image: grafana/loki:2.9.8
-    container_name: bigdata-loki
-    restart: unless-stopped
-    mem_limit: 200m
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - ./observability/loki.yml:/etc/loki/local-config.yaml:ro
-      - loki-data:/loki
-
-  tempo:
-    image: grafana/tempo:2.5.0
-    container_name: bigdata-tempo
-    restart: unless-stopped
-    mem_limit: 250m
-    command: -config.file=/etc/tempo/config.yml
-    ports:
-      - "127.0.0.1:4317:4317"
-      - "127.0.0.1:4318:4318"
-      - "127.0.0.1:13200:3200"
-    volumes:
-      - ./observability/tempo.yml:/etc/tempo/config.yml:ro
-      - tempo-data:/var/tempo
-
-  promtail:
-    image: grafana/promtail:2.9.8
-    container_name: bigdata-promtail
-    restart: unless-stopped
-    mem_limit: 100m
-    depends_on:
-      - loki
-    command: -config.file=/etc/promtail/config.yml
-    volumes:
-      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ../../data-processing-platform-service/logs:/var/log/data-processing-platform-service:ro
-
-  grafana:
-    image: grafana/grafana:11.1.0
-    container_name: bigdata-grafana
-    restart: unless-stopped
-    mem_limit: 200m
-    depends_on:
-      - prometheus
-      - loki
-      - tempo
-    environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      # Required alongside ENABLED above - without an explicit org name,
-      # anonymous requests fail to resolve to an org and the dashboard shell
-      # loads but every panel silently renders empty (confirmed live: no
-      # error shown anywhere, just zero panels in the DOM).
-      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
-      GF_AUTH_DISABLE_LOGIN_FORM: "false"
-    ports:
-      - "127.0.0.1:13000:3000" # Grafana UI (http://localhost:13000, admin/admin on first login - or browse anonymously as Viewer)
-    # prometheus moved to network_mode: host (see that service's own
-    # comment) - it's no longer on this bridge network, so the plain
-    # service-name DNS lookup "prometheus" Grafana's datasource used to rely
-    # on stopped resolving. host.docker.internal reaches it instead now
-    # (see datasources.yml).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
+  # prometheus/loki/tempo/promtail/grafana removed 2026-08-03 (trimmed for
+  # memory - see kafka-common-env's comment above for the full incident).
+  # Their per-container mem_limits (100-250m each) weren't themselves huge,
+  # but every bit of headroom mattered on a 14GB host already at 11-12GB
+  # used at idle. Re-add from git history if this scales back up to a
+  # bigger instance.
 
 volumes:
   mysql-data:
   mysql-replica-data:
   flink-state:
   kafka-data:
-  kafka-2-data:
-  kafka-3-data:
   clickhouse-data:
   oracle-data:
   redis-data:
   doris-fe-meta:
   doris-be1-storage:
-  doris-be2-storage:
-  doris-be3-storage:
   minio-data:
-  prometheus-data:
-  loki-data:
-  grafana-data:
-  tempo-data:
 
 # Named "default" (not "bigdata_default") deliberately - this is the exact
 # network Compose would create implicitly anyway (named "<project>_default";

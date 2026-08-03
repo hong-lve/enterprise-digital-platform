@@ -65,7 +65,16 @@ done
 # keytool from a disposable container instead of requiring a JRE on the
 # host - reuses the apache/kafka image already pulled for this stack rather
 # than pulling something new just for this one step.
-docker run --rm -v "$OUT":/certs --entrypoint keytool apache/kafka:3.7.0 \
+#
+# --user 0:0 - confirmed live that apache/kafka:3.7.0's default non-root
+# user can't write a NEW file into $OUT when it's a host-mounted directory
+# owned by a different UID, which used to fail silently enough that a
+# separate manual re-run (as root) was needed after this script - and that
+# manual re-run independently re-randomized $PASSWORD, permanently
+# desyncing creds.txt from the keystores this same script had already
+# written a moment earlier. Running as root here keeps the whole script
+# (keys+certs+keystores+truststore+creds.txt) one consistent invocation.
+docker run --rm --user 0:0 -v "$OUT":/certs --entrypoint keytool apache/kafka:3.7.0 \
   -importcert -alias ca -file /certs/ca.crt -keystore /certs/truststore.p12 \
   -storetype PKCS12 -storepass "$PASSWORD" -noprompt
 
