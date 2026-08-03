@@ -1,5 +1,6 @@
 server:
   port: 8087
+  shutdown: graceful
 
 spring:
   application:
@@ -17,6 +18,8 @@ spring:
     template:
       query-timeout: ${DATA_SERVICE_QUERY_TIMEOUT_SECONDS:10}
       max-rows: ${DATA_SERVICE_MAX_PAGE_SIZE:500}
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
@@ -67,6 +70,11 @@ platform:
       max-concurrent-per-api: ${DATA_SERVICE_MAX_CONCURRENT_PER_API:20}
       failure-threshold: ${DATA_SERVICE_CIRCUIT_FAILURE_THRESHOLD:5}
       open-duration: ${DATA_SERVICE_CIRCUIT_OPEN_DURATION:30s}
+      redis-prefix: ${DATA_SERVICE_CIRCUIT_REDIS_PREFIX:data-service:circuit}
+      redis-enabled: ${DATA_SERVICE_CIRCUIT_REDIS_ENABLED:true}
+    rate-limit:
+      redis-prefix: ${DATA_SERVICE_RATE_LIMIT_REDIS_PREFIX:data-service:rate-limit}
+      redis-enabled: ${DATA_SERVICE_RATE_LIMIT_REDIS_ENABLED:true}
     slo:
       initial-delay-ms: ${DATA_SERVICE_SLO_INITIAL_DELAY_MS:30000}
       evaluation-interval-ms: ${DATA_SERVICE_SLO_EVALUATION_INTERVAL_MS:60000}

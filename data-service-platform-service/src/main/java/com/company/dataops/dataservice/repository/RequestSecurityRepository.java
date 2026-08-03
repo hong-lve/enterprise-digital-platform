@@ -5,17 +5,43 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Repository
 public class RequestSecurityRepository {
+    private static final Logger LOGGER = LoggerFactory.getLogger(RequestSecurityRepository.class);
+    private static final DefaultRedisScript<Long> RATE_LIMIT_SCRIPT = new DefaultRedisScript<>("""
+        local current = redis.call('INCR', KEYS[1])
+        if current == 1 then
+          redis.call('EXPIRE', KEYS[1], ARGV[1])
+        end
+        return current
+        """, Long.class);
+
     private final JdbcTemplate jdbcTemplate;
+    private final StringRedisTemplate redisTemplate;
+    private final String redisPrefix;
+    private final boolean redisEnabled;
     private final AtomicLong cleanupCounter = new AtomicLong();
 
-    public RequestSecurityRepository(JdbcTemplate jdbcTemplate) {
+    public RequestSecurityRepository(
+        JdbcTemplate jdbcTemplate,
+        ObjectProvider<StringRedisTemplate> redisTemplate,
+        @Value("${platform.data-service.rate-limit.redis-prefix:data-service:rate-limit}") String redisPrefix,
+        @Value("${platform.data-service.rate-limit.redis-enabled:true}") boolean redisEnabled
+    ) {
         this.jdbcTemplate = jdbcTemplate;
+        this.redisTemplate = redisTemplate.getIfAvailable();
+        this.redisPrefix = redisPrefix;
+        this.redisEnabled = redisEnabled;
     }
 
     public boolean registerNonce(String appKey, String nonce, Instant expiresAt) {
@@ -33,6 +59,24 @@ public class RequestSecurityRepository {
 
     @Transactional
     public RateLimitDecision acquire(String appKey, int limit, long windowSecond) {
+        if (redisEnabled && redisTemplate != null) {
+            try {
+                String key = redisPrefix + ":qps:" + appKey + ":" + windowSecond;
+                Long count = redisTemplate.execute(
+                    RATE_LIMIT_SCRIPT,
+                    java.util.List.of(key),
+                    "2"
+                );
+                int current = count == null ? 1 : Math.toIntExact(count);
+                return new RateLimitDecision(current <= limit, limit, Math.max(0, limit - current));
+            } catch (RuntimeException exception) {
+                LOGGER.warn("Redis rate limiter unavailable; falling back to MySQL: {}", exception.getMessage());
+            }
+        }
+        return acquireFromDatabase(appKey, limit, windowSecond);
+    }
+
+    private RateLimitDecision acquireFromDatabase(String appKey, int limit, long windowSecond) {
         jdbcTemplate.update("""
             INSERT INTO data_service_rate_limit_counter (app_key, window_second, request_count)
             VALUES (?, ?, 1)

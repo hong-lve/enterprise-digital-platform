@@ -12,6 +12,39 @@ on:
     branches: [main]
 
 jobs:
+  data-service-backend:
+    name: data-service-platform-service (mvn test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Test with MySQL and Redis containers
+        run: mvn -q -f data-service-platform-service/pom.xml test
+
+  data-service-frontend:
+    name: data-service-platform-web (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: data-service-platform-web/package-lock.json
+      - name: Install dependencies
+        working-directory: data-service-platform-web
+        run: npm ci
+      - name: Lint
+        working-directory: data-service-platform-web
+        run: npm run lint
+      - name: Type-check + build
+        working-directory: data-service-platform-web
+        run: npm run build
+
   backend:
     name: data-processing-platform-service (mvn test)
     runs-on: ubuntu-latest

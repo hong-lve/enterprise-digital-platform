@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -23,21 +24,38 @@ public class ApiResilienceService {
     private final int maxConcurrent;
     private final int failureThreshold;
     private final Duration openDuration;
+    private final DistributedCircuitBreakerStore distributedStore;
 
+    @Autowired
     public ApiResilienceService(
         @Value("${platform.data-service.resilience.max-concurrent-per-api:20}") int maxConcurrent,
         @Value("${platform.data-service.resilience.failure-threshold:5}") int failureThreshold,
-        @Value("${platform.data-service.resilience.open-duration:30s}") Duration openDuration
+        @Value("${platform.data-service.resilience.open-duration:30s}") Duration openDuration,
+        DistributedCircuitBreakerStore distributedStore
     ) {
         this.maxConcurrent = Math.max(1, maxConcurrent);
         this.failureThreshold = Math.max(1, failureThreshold);
         this.openDuration = openDuration;
+        this.distributedStore = distributedStore;
+    }
+
+    ApiResilienceService(int maxConcurrent, int failureThreshold, Duration openDuration) {
+        this.maxConcurrent = Math.max(1, maxConcurrent);
+        this.failureThreshold = Math.max(1, failureThreshold);
+        this.openDuration = openDuration;
+        this.distributedStore = null;
     }
 
     public <T> T execute(long apiId, Supplier<T> supplier) {
         ApiState state = states.computeIfAbsent(apiId, ignored -> new ApiState(maxConcurrent));
-        boolean probe = state.beforeExecution();
-        if (state.isOpen() && !probe) {
+        DistributedCircuitBreakerStore.Permit distributedPermit = distributedStore == null
+            ? DistributedCircuitBreakerStore.Permit.LOCAL_FALLBACK
+            : distributedStore.acquire(apiId, openDuration);
+        boolean localFallback = distributedPermit == DistributedCircuitBreakerStore.Permit.LOCAL_FALLBACK;
+        boolean probe = localFallback ? state.beforeExecution()
+            : distributedPermit == DistributedCircuitBreakerStore.Permit.PROBE;
+        if (distributedPermit == DistributedCircuitBreakerStore.Permit.REJECT
+            || (localFallback && state.isOpen() && !probe)) {
             circuitRejected.increment();
             throw new ResponseStatusException(
                 HttpStatus.SERVICE_UNAVAILABLE,
@@ -58,9 +76,15 @@ public class ApiResilienceService {
         try {
             T value = supplier.get();
             state.onSuccess();
+            if (distributedStore != null) {
+                distributedStore.success(apiId);
+            }
             return value;
         } catch (RuntimeException exception) {
             state.onFailure(failureThreshold, openDuration);
+            if (distributedStore != null) {
+                distributedStore.failure(apiId, failureThreshold, openDuration);
+            }
             throw exception;
         } finally {
             state.active().decrementAndGet();

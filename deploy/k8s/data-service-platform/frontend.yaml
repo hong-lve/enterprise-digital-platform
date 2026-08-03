@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-service-platform-web
+  namespace: data-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: data-service-platform-web
+  template:
+    metadata:
+      labels:
+        app: data-service-platform-web
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/hong-lve/data-service-platform-web:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-service-platform-web
+  namespace: data-platform
+spec:
+  selector:
+    app: data-service-platform-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,55 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: data-service-platform-service
+  namespace: data-platform
+spec:
+  selector:
+    matchLabels:
+      app: data-service-platform-service
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: data-service-platform-alerts
+  namespace: data-platform
+spec:
+  groups:
+    - name: data-service-platform
+      rules:
+        - alert: DataServicePlatformUnavailable
+          expr: sum(up{namespace="data-platform",service="data-service-platform-service"}) < 2
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than two data service replicas are available
+        - alert: DataServiceApiHighErrorRate
+          expr: |
+            sum(rate(data_service_api_requests_total{outcome="ERROR"}[5m]))
+            / clamp_min(sum(rate(data_service_api_requests_total[5m])), 0.001) > 0.02
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Data service API error rate is above 2%
+        - alert: DataServiceApiHighP95Latency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(data_service_api_latency_seconds_bucket[5m]))) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Data service API p95 latency is above 500 ms
+        - alert: DataServicePodRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="data-platform",container="service"}[15m]) > 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Data service backend is repeatedly restarting
