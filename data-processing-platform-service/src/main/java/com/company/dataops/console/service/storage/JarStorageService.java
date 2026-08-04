@@ -4,6 +4,13 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -35,6 +42,16 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  */
 @Component
 public class JarStorageService {
+    // Unbounded but self-limiting: each get() caps its own thread's lifetime
+    // at 60s (via forced-close on timeout below), so this never accumulates
+    // more concurrent threads than concurrent in-flight get() calls.
+    private static final ExecutorService DOWNLOAD_EXECUTOR =
+        Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable, "jar-storage-download");
+            thread.setDaemon(true);
+            return thread;
+        });
+
     private final S3Client s3Client;
     private final String bucket;
 
@@ -79,13 +96,53 @@ public class JarStorageService {
         s3Client.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(), RequestBody.fromBytes(content));
     }
 
+    /**
+     * connectionTimeout/socketTimeout on the http client only bound each
+     * individual read() call - a tunnel trickling a few bytes every 20s
+     * never trips either one while still taking minutes overall, which is
+     * exactly what wedged a Tomcat thread (and eventually the whole pool)
+     * during a JAR-backed Flink job start. Run the read on a separate
+     * thread with a hard wall-clock deadline, forcibly closing the
+     * response stream from this thread on timeout - closing (not
+     * interrupting) is what actually unblocks a stuck socket read.
+     */
     public byte[] get(String key) {
-        try (ResponseInputStream<GetObjectResponse> response = s3Client.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build())) {
-            return response.readAllBytes();
-        } catch (NoSuchKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件已丢失");
-        } catch (IOException exception) {
-            throw new UncheckedIOException(exception);
+        AtomicReference<ResponseInputStream<GetObjectResponse>> responseHolder = new AtomicReference<>();
+        CompletableFuture<byte[]> future = CompletableFuture.supplyAsync(() -> {
+            try (ResponseInputStream<GetObjectResponse> response =
+                s3Client.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build())) {
+                responseHolder.set(response);
+                return response.readAllBytes();
+            } catch (IOException exception) {
+                throw new UncheckedIOException(exception);
+            }
+        }, DOWNLOAD_EXECUTOR);
+        try {
+            return future.get(60, TimeUnit.SECONDS);
+        } catch (TimeoutException exception) {
+            closeQuietly(responseHolder.get());
+            future.cancel(true);
+            throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "读取 JAR 文件超时（60秒），可能是对象存储连接不稳定");
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof NoSuchKeyException) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文件已丢失");
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "读取 JAR 文件失败：" + cause.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "读取 JAR 文件被中断");
+        }
+    }
+
+    private void closeQuietly(AutoCloseable closeable) {
+        if (closeable == null) {
+            return;
+        }
+        try {
+            closeable.close();
+        } catch (Exception ignored) {
+            // best-effort: we're already on the timeout path
         }
     }
 
