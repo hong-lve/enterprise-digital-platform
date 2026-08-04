@@ -3,6 +3,7 @@ package com.company.dataops.console.service.storage;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -50,7 +51,15 @@ public class JarStorageService {
             .region(Region.of(region))
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
             .forcePathStyle(true)
-            .httpClient(UrlConnectionHttpClient.create())
+            // Without explicit timeouts, a stalled read over a flaky SSH
+            // tunnel (MinIO sits behind one in the remote deployment) blocks
+            // the calling Tomcat thread forever instead of failing - this
+            // wedged every request once its thread pool filled up with such
+            // stuck reads (see JAR upload hang during Flink job start).
+            .httpClient(UrlConnectionHttpClient.builder()
+                .connectionTimeout(Duration.ofSeconds(10))
+                .socketTimeout(Duration.ofSeconds(30))
+                .build())
             .build();
         ensureBucketExists();
     }

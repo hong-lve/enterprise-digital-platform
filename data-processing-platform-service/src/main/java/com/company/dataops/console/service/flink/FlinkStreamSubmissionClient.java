@@ -307,7 +307,7 @@ public class FlinkStreamSubmissionClient {
                 Map<?, ?> operation = (Map<?, ?>) statusResult.get("operation");
                 Object failureCause = operation == null ? null : operation.get("failure-cause");
                 if (failureCause != null) {
-                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "保存点删除失败：" + failureCause);
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "保存点删除失败：" + describeFailureCause(failureCause));
                 }
                 return;
             }
@@ -355,11 +355,32 @@ public class FlinkStreamSubmissionClient {
                 if (operation != null && operation.get("location") != null) {
                     return String.valueOf(operation.get("location"));
                 }
-                String failureCause = operation == null ? "无详情" : String.valueOf(operation.get("failure-cause"));
+                String failureCause = operation == null ? "无详情" : describeFailureCause(operation.get("failure-cause"));
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "停止失败：" + failureCause);
             }
         }
         throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "等待停止确认超时（30秒）");
+    }
+
+    /**
+     * Flink's failure-cause field is a structured object
+     * ({class, stack-trace, serialized-throwable}), not a plain string - a
+     * bare String.valueOf(...) on it dumps the raw Map.toString(), which
+     * includes the base64 serialized-throwable blob (hundreds of chars) in
+     * the user-facing error message. Surface just the readable class + first
+     * stack-trace line instead.
+     */
+    private String describeFailureCause(Object failureCause) {
+        if (!(failureCause instanceof Map<?, ?> causeMap)) {
+            return failureCause == null ? "无详情" : String.valueOf(failureCause);
+        }
+        Object stackTrace = causeMap.get("stack-trace");
+        if (stackTrace instanceof String stackTraceText && !stackTraceText.isBlank()) {
+            int newline = stackTraceText.indexOf('\n');
+            return newline == -1 ? stackTraceText : stackTraceText.substring(0, newline);
+        }
+        Object clazz = causeMap.get("class");
+        return clazz == null ? "无详情" : String.valueOf(clazz);
     }
 
     private void sleepOneSecond() {
