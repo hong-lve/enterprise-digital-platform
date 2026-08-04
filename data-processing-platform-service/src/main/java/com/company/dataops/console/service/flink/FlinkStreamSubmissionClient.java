@@ -74,7 +74,56 @@ public class FlinkStreamSubmissionClient {
         }
     }
 
+    /**
+     * Flink keeps every jar ever uploaded to it and can re-run one by id
+     * without a fresh upload, so an already-present jar makes the whole
+     * download-from-object-storage + upload-to-Flink round trip pure waste.
+     * That round trip is not a micro-optimisation to skip: object storage and
+     * Flink both live on the remote host while this service runs locally, so
+     * a 27MB jar crosses a ~1Mbps link twice (~7 minutes) and reliably blew
+     * past JarStorageService.get()'s read deadline - starting an existing job
+     * failed outright until this lookup existed.
+     *
+     * Matches on Flink's `name` (the original upload filename, which is the
+     * storage key) rather than `id` (`<uuid>_<name>`, assigned per upload).
+     * Any lookup failure falls through to the upload path: a stale hit is the
+     * only real hazard, and jar content is immutable per storage key here
+     * (JarStorageService writes a fresh uuid key per version).
+     */
+    private String findExistingJarId(String targetBaseUrl, String jarStorageKey) {
+        Map<?, ?> result;
+        try {
+            result = restTemplate.getForObject(targetBaseUrl + "/v1/jars", Map.class);
+        } catch (Exception exception) {
+            return null;
+        }
+        if (result == null || !(result.get("files") instanceof List<?> files)) {
+            return null;
+        }
+        String newestId = null;
+        long newestUploaded = Long.MIN_VALUE;
+        for (Object fileObj : files) {
+            if (!(fileObj instanceof Map<?, ?> file)) {
+                continue;
+            }
+            if (!jarStorageKey.equals(String.valueOf(file.get("name"))) || file.get("id") == null) {
+                continue;
+            }
+            Long uploaded = toLong(file.get("uploaded"));
+            long uploadedAt = uploaded == null ? 0L : uploaded;
+            if (uploadedAt >= newestUploaded) {
+                newestUploaded = uploadedAt;
+                newestId = String.valueOf(file.get("id"));
+            }
+        }
+        return newestId;
+    }
+
     private String uploadJar(String targetBaseUrl, String jarStorageKey) {
+        String existingJarId = findExistingJarId(targetBaseUrl, jarStorageKey);
+        if (existingJarId != null) {
+            return existingJarId;
+        }
         byte[] jarBytes = jarStorageService.get(jarStorageKey);
         MultipartBodyBuilder builder = new MultipartBodyBuilder();
         builder.part("jarfile", new ByteArrayResource(jarBytes) {
