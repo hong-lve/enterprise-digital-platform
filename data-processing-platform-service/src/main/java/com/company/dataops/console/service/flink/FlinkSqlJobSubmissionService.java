@@ -96,7 +96,7 @@ public class FlinkSqlJobSubmissionService {
     private Map<String, String> buildProperties(FlinkSqlJobEntity job) {
         Map<String, String> properties = new LinkedHashMap<>();
         properties.put("parallelism.default", String.valueOf(job.getParallelism() == null ? 1 : job.getParallelism()));
-        int checkpointIntervalMs = job.getCheckpointIntervalMs() == null ? 10000 : job.getCheckpointIntervalMs();
+        int checkpointIntervalMs = job.getCheckpointIntervalMs() == null ? 60000 : job.getCheckpointIntervalMs();
         properties.put("execution.checkpointing.interval", checkpointIntervalMs + " ms");
         if (job.getSavepointPath() != null && !job.getSavepointPath().isBlank()) {
             properties.put("execution.savepoint.path", job.getSavepointPath());

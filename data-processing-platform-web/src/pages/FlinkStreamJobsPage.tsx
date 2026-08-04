@@ -131,7 +131,7 @@ export function FlinkStreamJobsPage() {
     form.resetFields();
     form.setFieldsValue({
       parallelism: 1,
-      checkpointIntervalMs: 10000,
+      checkpointIntervalMs: 60000,
       restartStrategy: 'FIXED_DELAY',
       restartAttempts: 3,
       restartDelaySeconds: 10,

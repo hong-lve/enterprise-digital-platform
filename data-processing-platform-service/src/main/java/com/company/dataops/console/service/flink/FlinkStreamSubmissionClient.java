@@ -108,7 +108,7 @@ public class FlinkStreamSubmissionClient {
 
     private Map<String, String> buildFlinkConfiguration(FlinkStreamJobEntity job) {
         Map<String, String> config = new LinkedHashMap<>();
-        int checkpointIntervalMs = job.getCheckpointIntervalMs() == null ? 10000 : job.getCheckpointIntervalMs();
+        int checkpointIntervalMs = job.getCheckpointIntervalMs() == null ? 60000 : job.getCheckpointIntervalMs();
         config.put("execution.checkpointing.interval", checkpointIntervalMs + " ms");
         // Checkpoint governance knobs - all optional on the entity (nullable
         // columns, see V33 migration), defaulted here rather than at the DB

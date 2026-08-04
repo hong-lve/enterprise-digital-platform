@@ -134,7 +134,7 @@ export function FlinkSqlJobsPage() {
   const openCreate = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ parallelism: 1, checkpointIntervalMs: 10000, environment: 'DEV' });
+    form.setFieldsValue({ parallelism: 1, checkpointIntervalMs: 60000, environment: 'DEV' });
     setSqlScript(EXAMPLE_SQL);
     resetWizard();
     setModalOpen(true);
