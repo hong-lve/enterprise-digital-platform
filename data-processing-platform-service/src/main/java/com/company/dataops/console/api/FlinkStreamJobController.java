@@ -452,15 +452,24 @@ public class FlinkStreamJobController {
         if (job.getSavepointPath() == null || job.getSavepointPath().isBlank()) {
             return;
         }
-        FlinkCheckpointHistoryEntity entry = flinkCheckpointHistoryMapper.selectOne(new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
-            .eq(FlinkCheckpointHistoryEntity::getJobId, job.getId())
-            .eq(FlinkCheckpointHistoryEntity::getExternalPath, job.getSavepointPath()));
-        if (entry == null) {
-            return;
+        // selectList, not selectOne: one savepoint legitimately lands in this
+        // table twice - recordSavepoint() writes a synthetic SAVEPOINT row the
+        // moment stop-with-savepoint returns, and FlinkCheckpointHistoryScheduler
+        // later syncs Flink's own view of the same savepoint under its real
+        // checkpoint id (type SYNC_SAVEPOINT). Both carry the same
+        // externalPath, so selectOne threw TooManyResultsException and failed
+        // the whole start() for exactly the jobs that had been stopped with a
+        // savepoint. They describe the same savepoint, so annotate every match.
+        List<FlinkCheckpointHistoryEntity> entries = flinkCheckpointHistoryMapper.selectList(
+            new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
+                .eq(FlinkCheckpointHistoryEntity::getJobId, job.getId())
+                .eq(FlinkCheckpointHistoryEntity::getExternalPath, job.getSavepointPath()));
+        LocalDateTime checkedAt = LocalDateTime.now();
+        for (FlinkCheckpointHistoryEntity entry : entries) {
+            entry.setRestoreOutcome(outcome);
+            entry.setRestoreCheckedAt(checkedAt);
+            flinkCheckpointHistoryMapper.updateById(entry);
         }
-        entry.setRestoreOutcome(outcome);
-        entry.setRestoreCheckedAt(LocalDateTime.now());
-        flinkCheckpointHistoryMapper.updateById(entry);
     }
 
     @GetMapping("/{id}/checkpoints")
