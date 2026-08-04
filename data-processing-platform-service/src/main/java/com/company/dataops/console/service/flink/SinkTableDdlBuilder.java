@@ -110,7 +110,7 @@ public class SinkTableDdlBuilder {
             + "  'url' = '" + jdbcScheme + "://" + target.getFlinkHost() + ":" + target.getFlinkPort() + "/" + target.getDatabaseName() + "',\n"
             + "  'table-name' = '" + targetTable + "',\n"
             + "  'username' = '" + target.getUsername() + "',\n"
-            + "  'password' = '" + target.getPassword() + "'";
+            + "  'password' = '" + secretReference(target) + "'";
     }
 
     private String oracleWithClause(DataSourceEntity target, String targetTable) {
@@ -124,7 +124,7 @@ public class SinkTableDdlBuilder {
             + "  'url' = 'jdbc:oracle:thin:@//" + target.getFlinkHost() + ":" + target.getFlinkPort() + "/" + target.getDatabaseName() + "',\n"
             + "  'table-name' = '" + targetTable + "',\n"
             + "  'username' = '" + target.getUsername() + "',\n"
-            + "  'password' = '" + target.getPassword() + "'";
+            + "  'password' = '" + secretReference(target) + "'";
     }
 
     private String dorisWithClause(DataSourceEntity target, String targetTable) {
@@ -139,7 +139,7 @@ public class SinkTableDdlBuilder {
             + "  'fenodes' = '" + target.getFlinkHost() + ":" + target.getFlinkHttpPort() + "',\n"
             + "  'table.identifier' = '" + target.getDatabaseName() + "." + targetTable + "',\n"
             + "  'username' = '" + target.getUsername() + "',\n"
-            + "  'password' = '" + (target.getPassword() == null ? "" : target.getPassword()) + "',\n"
+            + "  'password' = '" + secretReference(target) + "',\n"
             + "  'sink.label-prefix' = '" + labelPrefix + "',\n"
             + "  'sink.enable-delete' = 'true'";
     }
@@ -150,11 +150,10 @@ public class SinkTableDdlBuilder {
         // key-prefix namespaces by target table so two sink tables writing
         // into the same Redis instance don't collide on the same keys.
         requireFlinkAddress(target, false);
-        String password = target.getPassword() == null ? "" : target.getPassword();
         return "  'connector' = 'redis',\n"
             + "  'host' = '" + target.getFlinkHost() + "',\n"
             + "  'port' = '" + target.getFlinkPort() + "',\n"
-            + "  'password' = '" + password + "',\n"
+            + "  'password' = '" + secretReference(target) + "',\n"
             + "  'key-prefix' = '" + targetTable + ":'";
     }
 
@@ -170,5 +169,12 @@ public class SinkTableDdlBuilder {
         if (target.getDatabaseName() == null || target.getDatabaseName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该数据源未配置默认数据库，请先在数据源管理里补充");
         }
+    }
+
+    private String secretReference(DataSourceEntity target) {
+        if (target.getId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "目标数据源必须先保存，才能生成安全的凭据引用");
+        }
+        return "${secret:datasource:" + target.getId() + ":password}";
     }
 }

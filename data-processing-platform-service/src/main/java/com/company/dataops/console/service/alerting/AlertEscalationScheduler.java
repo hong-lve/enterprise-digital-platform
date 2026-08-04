@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.AlertHistoryEntity;
 import com.company.dataops.console.mapper.AlertHistoryMapper;
 import com.company.dataops.console.service.RealtimeAlertService;
+import com.company.dataops.console.service.coordination.ClusterSingleton;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -44,6 +45,7 @@ public class AlertEscalationScheduler {
         this.frontendUrl = frontendUrl;
     }
 
+    @ClusterSingleton(value = "alert-escalation", lockAtMostSeconds = 300)
     @Scheduled(fixedDelay = 60000)
     public void escalateLongRunningAlerts() {
         List<AlertHistoryEntity> candidates = alertHistoryMapper.selectUnescalatedLongRunningAlerts(escalationMinutes);

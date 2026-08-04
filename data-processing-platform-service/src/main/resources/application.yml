@@ -89,6 +89,13 @@ logging:
     name: ${LOG_FILE:./logs/data-processing-platform-service.log}
 
 platform:
+  retention:
+    data-quality-days: ${DATA_QUALITY_RETENTION_DAYS:90}
+    checkpoint-days: ${CHECKPOINT_RETENTION_DAYS:180}
+    recovery-days: ${RECOVERY_RETENTION_DAYS:180}
+    audit-days: ${AUDIT_RETENTION_DAYS:365}
+    operation-days: ${OPERATION_RETENTION_DAYS:90}
+    cron: ${HISTORY_RETENTION_CRON:0 30 3 * * *}
   # Local-dev-only defaults - any real deployment must override both via env
   # vars and keep the actual key material out of source control.
   # datasource-encryption-keys: comma-separated version:base64key pairs (each

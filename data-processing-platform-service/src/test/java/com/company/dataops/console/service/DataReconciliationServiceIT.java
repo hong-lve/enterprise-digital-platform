@@ -39,7 +39,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * unit suite - see pom.xml's failsafe binding and the *IT.java naming
  * convention it picks up.
  */
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class DataReconciliationServiceIT {
     @Container
     static MySQLContainer<?> sourceDb = new MySQLContainer<>("mysql:8.0.36")

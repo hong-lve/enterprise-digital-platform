@@ -7,6 +7,8 @@ import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.mapper.FlinkCheckpointHistoryMapper;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import java.util.Comparator;
 import java.util.List;
 import org.slf4j.Logger;
@@ -38,21 +40,25 @@ public class FlinkCheckpointHistoryScheduler {
     private final FlinkStreamSubmissionClient flinkStreamSubmissionClient;
     private final RealtimeAlertService realtimeAlertService;
     private final String frontendUrl;
+    private final RealtimeMetrics metrics;
 
     public FlinkCheckpointHistoryScheduler(
         FlinkStreamJobMapper flinkStreamJobMapper,
         FlinkCheckpointHistoryMapper flinkCheckpointHistoryMapper,
         FlinkStreamSubmissionClient flinkStreamSubmissionClient,
         RealtimeAlertService realtimeAlertService,
+        RealtimeMetrics metrics,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.flinkStreamJobMapper = flinkStreamJobMapper;
         this.flinkCheckpointHistoryMapper = flinkCheckpointHistoryMapper;
         this.flinkStreamSubmissionClient = flinkStreamSubmissionClient;
         this.realtimeAlertService = realtimeAlertService;
+        this.metrics = metrics;
         this.frontendUrl = frontendUrl;
     }
 
+    @ClusterSingleton(value = "flink-checkpoint-history", lockAtMostSeconds = 300)
     @Scheduled(fixedDelay = 30000)
     public void pollCheckpointHistory() {
         List<FlinkStreamJobEntity> runningJobs = flinkStreamJobMapper.selectList(new LambdaQueryWrapper<FlinkStreamJobEntity>()
@@ -92,6 +98,7 @@ public class FlinkCheckpointHistoryScheduler {
             entity.setDisposed(false);
             try {
                 flinkCheckpointHistoryMapper.insert(entity);
+                metrics.checkpoint(record.status(), record.endToEndDurationMs());
             } catch (DuplicateKeyException ignored) {
                 FlinkCheckpointHistoryEntity concurrent = flinkCheckpointHistoryMapper.selectOne(new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
                     .eq(FlinkCheckpointHistoryEntity::getJobId, job.getId())

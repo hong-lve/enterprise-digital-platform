@@ -1,5 +1,7 @@
 package com.company.dataops.console.service;
 
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.dataops.console.entity.FlinkCheckpointHistoryEntity;
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
@@ -39,6 +41,7 @@ public class FlinkSavepointRetentionScheduler {
         this.flinkStreamSubmissionClient = flinkStreamSubmissionClient;
     }
 
+    @ClusterSingleton(value = "flink-savepoint-retention", lockAtMostSeconds = 1800)
     @Scheduled(fixedDelay = 3600000, initialDelay = 3600000)
     public void enforceRetention() {
         List<FlinkStreamJobEntity> jobs = flinkStreamJobMapper.selectList(new LambdaQueryWrapper<FlinkStreamJobEntity>()
@@ -70,7 +73,7 @@ public class FlinkSavepointRetentionScheduler {
                 continue;
             }
             try {
-                flinkStreamSubmissionClient.disposeSavepoint(entity.getExternalPath());
+                flinkStreamSubmissionClient.disposeSavepoint(entity.getExternalPath(), entity.getFlinkJobId());
                 entity.setDisposed(true);
                 flinkCheckpointHistoryMapper.updateById(entity);
             } catch (Exception exception) {

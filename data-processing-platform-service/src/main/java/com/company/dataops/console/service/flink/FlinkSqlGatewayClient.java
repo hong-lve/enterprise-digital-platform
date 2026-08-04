@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -27,9 +28,15 @@ import org.springframework.web.server.ResponseStatusException;
 public class FlinkSqlGatewayClient {
     private final RestTemplate restTemplate = new RestTemplate();
     private final String baseUrl;
+    private final FlinkClusterRegistryService clusterRegistryService;
+    private final Map<String, String> sessionBaseUrls = new ConcurrentHashMap<>();
 
-    public FlinkSqlGatewayClient(@Value("${platform.bigdata.flink-sql-gateway-url:http://localhost:18084}") String baseUrl) {
+    public FlinkSqlGatewayClient(
+        @Value("${platform.bigdata.flink-sql-gateway-url:http://localhost:18084}") String baseUrl,
+        FlinkClusterRegistryService clusterRegistryService
+    ) {
         this.baseUrl = baseUrl;
+        this.clusterRegistryService = clusterRegistryService;
     }
 
     public String openSession() {
@@ -45,21 +52,32 @@ public class FlinkSqlGatewayClient {
      * FlinkSqlJobEntity has no restart-strategy fields).
      */
     public String openSession(Map<String, String> properties) {
+        return openSession(properties, null, "DEV");
+    }
+
+    public String openSession(Map<String, String> properties, Long clusterId, String environment) {
+        String targetBaseUrl = clusterRegistryService.resolve(clusterId, environment).getSqlGatewayUrl();
+        if (targetBaseUrl == null || targetBaseUrl.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Flink 集群未配置 SQL Gateway 地址");
+        }
         Map<?, ?> result;
         try {
-            result = restTemplate.postForObject(baseUrl + "/v1/sessions", Map.of("properties", properties), Map.class);
+            result = restTemplate.postForObject(targetBaseUrl + "/v1/sessions", Map.of("properties", properties), Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法连接 Flink SQL Gateway：" + exception.getMessage());
         }
         if (result == null || result.get("sessionHandle") == null) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "打开 SQL 会话失败");
         }
-        return String.valueOf(result.get("sessionHandle"));
+        String sessionHandle = String.valueOf(result.get("sessionHandle"));
+        sessionBaseUrls.put(sessionHandle, targetBaseUrl);
+        return sessionHandle;
     }
 
     public void closeSession(String sessionHandle) {
+        String targetBaseUrl = sessionBaseUrl(sessionHandle);
         try {
-            restTemplate.delete(baseUrl + "/v1/sessions/" + sessionHandle);
+            restTemplate.delete(targetBaseUrl + "/v1/sessions/" + sessionHandle);
         } catch (Exception ignored) {
             // best-effort: the gateway also expires idle sessions on its own,
             // and a failed close here shouldn't turn into an error response
@@ -69,13 +87,16 @@ public class FlinkSqlGatewayClient {
             // equivalent call, which hit Kafka Connect's stricter Jetty/
             // Jersey media-type validation) - the swallow here is purely for
             // the "gateway already expired it" case this comment describes.
+        } finally {
+            sessionBaseUrls.remove(sessionHandle);
         }
     }
 
     public String executeStatement(String sessionHandle, String statement) {
+        String targetBaseUrl = sessionBaseUrl(sessionHandle);
         Map<?, ?> result;
         try {
-            result = restTemplate.postForObject(baseUrl + "/v1/sessions/" + sessionHandle + "/statements", Map.of("statement", statement), Map.class);
+            result = restTemplate.postForObject(targetBaseUrl + "/v1/sessions/" + sessionHandle + "/statements", Map.of("statement", statement), Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "提交 SQL 失败：" + exception.getMessage());
         }
@@ -101,6 +122,7 @@ public class FlinkSqlGatewayClient {
      */
     @SuppressWarnings("unchecked")
     public QueryResult awaitResult(String sessionHandle, String operationHandle, long deadlineMillis) {
+        String targetBaseUrl = sessionBaseUrl(sessionHandle);
         List<String> columns = null;
         List<Map<String, Object>> rows = new ArrayList<>();
         String jobId = null;
@@ -109,7 +131,7 @@ public class FlinkSqlGatewayClient {
         while (System.currentTimeMillis() < deadlineMillis) {
             Map<?, ?> response;
             try {
-                response = restTemplate.getForObject(baseUrl + path, Map.class);
+                response = restTemplate.getForObject(targetBaseUrl + path, Map.class);
             } catch (Exception exception) {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "获取查询结果失败：" + exception.getMessage());
             }
@@ -193,6 +215,10 @@ public class FlinkSqlGatewayClient {
         } catch (InterruptedException interruptedException) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private String sessionBaseUrl(String sessionHandle) {
+        return sessionBaseUrls.getOrDefault(sessionHandle, baseUrl);
     }
 
     public record QueryResult(List<String> columns, List<Map<String, Object>> rows, String jobId) {

@@ -43,6 +43,9 @@ public class FlinkStreamJobEntity {
     private String status;
     private String deploymentStatus;
     private String deploymentMessage;
+    private String deploymentOperation;
+    private String pendingResumePath;
+    private LocalDateTime deploymentUpdatedAt;
     private Boolean schemaBlocked;
     private String schemaBlockReason;
     private String lastError;
@@ -64,6 +67,7 @@ public class FlinkStreamJobEntity {
     // isolation - see V9__environment_field.sql. Gates start/stop/delete/
     // update via EnvironmentGuard when set to PROD.
     private String environment;
+    private Long clusterId;
     private String owner;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

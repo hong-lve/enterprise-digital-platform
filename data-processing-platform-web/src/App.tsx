@@ -1,30 +1,32 @@
 import { Button, Result, Spin } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { getMeSilently } from './api/auth';
 import { AppShell } from './components/AppShell';
-import { AlertHistoryPage } from './pages/AlertHistoryPage';
-import { AlertOpsPage } from './pages/AlertOpsPage';
-import { ApprovalCenterPage } from './pages/ApprovalCenterPage';
-import { AuditLogPage } from './pages/AuditLogPage';
-import { CdcSourcesPage } from './pages/CdcSourcesPage';
-import { ContainerMonitoringPage } from './pages/ContainerMonitoringPage';
-import { DataSourcesPage } from './pages/DataSourcesPage';
-import { FlinkSqlJobsPage } from './pages/FlinkSqlJobsPage';
-import { FlinkSqlPage } from './pages/FlinkSqlPage';
-import { FlinkStreamJobsPage } from './pages/FlinkStreamJobsPage';
-import { JarPackagesPage } from './pages/JarPackagesPage';
-import { LineagePage } from './pages/LineagePage';
-import { LoginPage } from './pages/LoginPage';
-import { DataQualityRulesPage } from './pages/DataQualityRulesPage';
-import { RealtimeOverviewPage } from './pages/RealtimeOverviewPage';
-import { RealtimeQueryPage } from './pages/RealtimeQueryPage';
-import { ReconciliationPage } from './pages/ReconciliationPage';
-import { SystemMenusPage } from './pages/SystemMenusPage';
-import { SystemSecurityPage } from './pages/SystemSecurityPage';
-import { SystemRolesPage } from './pages/SystemRolesPage';
-import { SystemUsersPage } from './pages/SystemUsersPage';
 import { useAuthStore } from './store/auth';
+
+const AlertHistoryPage = lazy(() => import('./pages/AlertHistoryPage').then((m) => ({ default: m.AlertHistoryPage })));
+const AlertOpsPage = lazy(() => import('./pages/AlertOpsPage').then((m) => ({ default: m.AlertOpsPage })));
+const ApprovalCenterPage = lazy(() => import('./pages/ApprovalCenterPage').then((m) => ({ default: m.ApprovalCenterPage })));
+const AuditLogPage = lazy(() => import('./pages/AuditLogPage').then((m) => ({ default: m.AuditLogPage })));
+const CdcSourcesPage = lazy(() => import('./pages/CdcSourcesPage').then((m) => ({ default: m.CdcSourcesPage })));
+const ContainerMonitoringPage = lazy(() => import('./pages/ContainerMonitoringPage').then((m) => ({ default: m.ContainerMonitoringPage })));
+const DataSourcesPage = lazy(() => import('./pages/DataSourcesPage').then((m) => ({ default: m.DataSourcesPage })));
+const FlinkClustersPage = lazy(() => import('./pages/FlinkClustersPage').then((m) => ({ default: m.FlinkClustersPage })));
+const FlinkSqlJobsPage = lazy(() => import('./pages/FlinkSqlJobsPage').then((m) => ({ default: m.FlinkSqlJobsPage })));
+const FlinkSqlPage = lazy(() => import('./pages/FlinkSqlPage').then((m) => ({ default: m.FlinkSqlPage })));
+const FlinkStreamJobsPage = lazy(() => import('./pages/FlinkStreamJobsPage').then((m) => ({ default: m.FlinkStreamJobsPage })));
+const JarPackagesPage = lazy(() => import('./pages/JarPackagesPage').then((m) => ({ default: m.JarPackagesPage })));
+const LineagePage = lazy(() => import('./pages/LineagePage').then((m) => ({ default: m.LineagePage })));
+const LoginPage = lazy(() => import('./pages/LoginPage').then((m) => ({ default: m.LoginPage })));
+const DataQualityRulesPage = lazy(() => import('./pages/DataQualityRulesPage').then((m) => ({ default: m.DataQualityRulesPage })));
+const RealtimeOverviewPage = lazy(() => import('./pages/RealtimeOverviewPage').then((m) => ({ default: m.RealtimeOverviewPage })));
+const RealtimeQueryPage = lazy(() => import('./pages/RealtimeQueryPage').then((m) => ({ default: m.RealtimeQueryPage })));
+const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage').then((m) => ({ default: m.ReconciliationPage })));
+const SystemMenusPage = lazy(() => import('./pages/SystemMenusPage').then((m) => ({ default: m.SystemMenusPage })));
+const SystemSecurityPage = lazy(() => import('./pages/SystemSecurityPage').then((m) => ({ default: m.SystemSecurityPage })));
+const SystemRolesPage = lazy(() => import('./pages/SystemRolesPage').then((m) => ({ default: m.SystemRolesPage })));
+const SystemUsersPage = lazy(() => import('./pages/SystemUsersPage').then((m) => ({ default: m.SystemUsersPage })));
 
 function Protected({ children }: { children: JSX.Element }) {
   const token = useAuthStore((state) => state.token);
@@ -86,7 +88,7 @@ function Protected({ children }: { children: JSX.Element }) {
 
 export default function App() {
   return (
-    <Routes>
+    <Suspense fallback={<div className="center-page"><Spin /></div>}><Routes>
       <Route path="/login" element={<LoginPage successPath="/realtime/overview" />} />
       <Route
         path="/"
@@ -101,6 +103,7 @@ export default function App() {
         <Route path="realtime/data-sources" element={<DataSourcesPage />} />
         <Route path="realtime/cdc-sources" element={<CdcSourcesPage />} />
         <Route path="realtime/flink-jobs" element={<FlinkStreamJobsPage />} />
+        <Route path="realtime/flink-clusters" element={<FlinkClustersPage />} />
         <Route path="realtime/jars" element={<JarPackagesPage />} />
         <Route path="realtime/query" element={<RealtimeQueryPage />} />
         <Route path="realtime/flink-sql" element={<FlinkSqlPage />} />
@@ -119,6 +122,6 @@ export default function App() {
         <Route path="system/approval-center" element={<ApprovalCenterPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </Routes></Suspense>
   );
 }

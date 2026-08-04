@@ -1,7 +1,9 @@
 package com.company.dataops.console.service.flink;
 
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
+import com.company.dataops.console.entity.FlinkClusterEntity;
 import com.company.dataops.console.service.storage.JarStorageService;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,27 +36,45 @@ public class FlinkStreamSubmissionClient {
     private final String baseUrl;
     private final FlinkCapacityInspector capacityInspector;
     private final JarStorageService jarStorageService;
+    private final RealtimeMetrics metrics;
+    private final FlinkClusterRegistryService clusterRegistryService;
 
     public FlinkStreamSubmissionClient(
         @Value("${platform.bigdata.flink-rest-url:http://localhost:18082}") String baseUrl,
         FlinkCapacityInspector capacityInspector,
-        JarStorageService jarStorageService
+        JarStorageService jarStorageService,
+        RealtimeMetrics metrics,
+        FlinkClusterRegistryService clusterRegistryService
     ) {
         this.baseUrl = baseUrl;
         this.capacityInspector = capacityInspector;
         this.jarStorageService = jarStorageService;
+        this.metrics = metrics;
+        this.clusterRegistryService = clusterRegistryService;
     }
 
     public String submit(FlinkStreamJobEntity job) {
         if (job.getJarPath() == null || job.getJarPath().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Flink 流作业必须填写 JAR 路径");
         }
-        capacityInspector.requireCapacity(job.getParallelism() == null ? 1 : job.getParallelism(), job.getEnvironment());
-        String jarId = uploadJar(job.getJarPath());
-        return run(jarId, job);
+        FlinkClusterEntity cluster = clusterRegistryService.resolve(job.getClusterId(), job.getEnvironment());
+        if (!"STANDALONE".equals(cluster.getDeploymentMode())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该作业选择的是 Operator 集群，请使用 Operator 部署接口");
+        }
+        String targetBaseUrl = cluster.getRestUrl();
+        capacityInspector.requireCapacity(targetBaseUrl, job.getParallelism() == null ? 1 : job.getParallelism(), job.getEnvironment());
+        try {
+            String jarId = uploadJar(targetBaseUrl, job.getJarPath());
+            String jobId = run(targetBaseUrl, jarId, job);
+            metrics.jobSubmission("jar", true);
+            return clusterRegistryService.encodeJobId(cluster, jobId);
+        } catch (RuntimeException exception) {
+            metrics.jobSubmission("jar", false);
+            throw exception;
+        }
     }
 
-    private String uploadJar(String jarStorageKey) {
+    private String uploadJar(String targetBaseUrl, String jarStorageKey) {
         byte[] jarBytes = jarStorageService.get(jarStorageKey);
         MultipartBodyBuilder builder = new MultipartBodyBuilder();
         builder.part("jarfile", new ByteArrayResource(jarBytes) {
@@ -69,7 +89,7 @@ public class FlinkStreamSubmissionClient {
 
         Map<?, ?> result;
         try {
-            result = restTemplate.postForObject(baseUrl + "/v1/jars/upload", request, Map.class);
+            result = restTemplate.postForObject(targetBaseUrl + "/v1/jars/upload", request, Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法连接 Flink JobManager：" + exception.getMessage());
         }
@@ -80,7 +100,7 @@ public class FlinkStreamSubmissionClient {
         return filename.substring(filename.lastIndexOf('/') + 1);
     }
 
-    private String run(String jarId, FlinkStreamJobEntity job) {
+    private String run(String targetBaseUrl, String jarId, FlinkStreamJobEntity job) {
         Map<String, Object> body = new LinkedHashMap<>();
         if (job.getEntryClass() != null && !job.getEntryClass().isBlank()) {
             body.put("entryClass", job.getEntryClass());
@@ -96,7 +116,7 @@ public class FlinkStreamSubmissionClient {
 
         Map<?, ?> result;
         try {
-            result = restTemplate.postForObject(baseUrl + "/v1/jars/" + jarId + "/run", body, Map.class);
+            result = restTemplate.postForObject(targetBaseUrl + "/v1/jars/" + jarId + "/run", body, Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Flink 流作业启动失败：" + exception.getMessage());
         }
@@ -156,8 +176,9 @@ public class FlinkStreamSubmissionClient {
      * falls through to its normal submit-a-fresh-instance path unchanged.
      */
     public boolean isRunning(String flinkJobId) {
+        FlinkClusterRegistryService.RoutedJob routed = clusterRegistryService.routeJobId(flinkJobId);
         try {
-            Map<?, ?> result = restTemplate.getForObject(baseUrl + "/v1/jobs/" + flinkJobId, Map.class);
+            Map<?, ?> result = restTemplate.getForObject(routed.cluster().getRestUrl() + "/v1/jobs/" + routed.actualJobId(), Map.class);
             if (result == null || result.get("state") == null) {
                 return false;
             }
@@ -172,9 +193,10 @@ public class FlinkStreamSubmissionClient {
     }
 
     public FlinkJobStatus status(String flinkJobId) {
+        FlinkClusterRegistryService.RoutedJob routed = clusterRegistryService.routeJobId(flinkJobId);
         Map<?, ?> result;
         try {
-            result = restTemplate.getForObject(baseUrl + "/v1/jobs/" + flinkJobId, Map.class);
+            result = restTemplate.getForObject(routed.cluster().getRestUrl() + "/v1/jobs/" + routed.actualJobId(), Map.class);
         } catch (HttpClientErrorException.NotFound notFound) {
             // Flink itself responded and definitively said this job id doesn't
             // exist - not a transient call failure, so don't fall back to
@@ -211,9 +233,10 @@ public class FlinkStreamSubmissionClient {
      * doesn't retain history beyond its own in-memory bound.
      */
     public List<CheckpointRecord> checkpointHistory(String flinkJobId) {
+        FlinkClusterRegistryService.RoutedJob routed = clusterRegistryService.routeJobId(flinkJobId);
         Map<?, ?> result;
         try {
-            result = restTemplate.getForObject(baseUrl + "/v1/jobs/" + flinkJobId + "/checkpoints", Map.class);
+            result = restTemplate.getForObject(routed.cluster().getRestUrl() + "/v1/jobs/" + routed.actualJobId() + "/checkpoints", Map.class);
         } catch (Exception exception) {
             return List.of();
         }
@@ -276,12 +299,17 @@ public class FlinkStreamSubmissionClient {
      * service's JVM doesn't and the savepoint volume isn't host-mounted.
      */
     public void disposeSavepoint(String savepointPath) {
+        disposeSavepoint(savepointPath, null);
+    }
+
+    public void disposeSavepoint(String savepointPath, String flinkJobId) {
+        String targetBaseUrl = flinkJobId == null ? baseUrl : clusterRegistryService.routeJobId(flinkJobId).cluster().getRestUrl();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("savepoint-path", savepointPath);
 
         Map<?, ?> triggerResult;
         try {
-            triggerResult = restTemplate.postForObject(baseUrl + "/v1/savepoint-disposal", body, Map.class);
+            triggerResult = restTemplate.postForObject(targetBaseUrl + "/v1/savepoint-disposal", body, Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "触发保存点删除失败：" + exception.getMessage());
         }
@@ -294,7 +322,7 @@ public class FlinkStreamSubmissionClient {
             sleepOneSecond();
             Map<?, ?> statusResult;
             try {
-                statusResult = restTemplate.getForObject(baseUrl + "/v1/savepoint-disposal/" + triggerId, Map.class);
+                statusResult = restTemplate.getForObject(targetBaseUrl + "/v1/savepoint-disposal/" + triggerId, Map.class);
             } catch (Exception exception) {
                 continue;
             }
@@ -323,12 +351,15 @@ public class FlinkStreamSubmissionClient {
      * behind a single blocking call for the caller.
      */
     public String stopWithSavepoint(String flinkJobId) {
+        FlinkClusterRegistryService.RoutedJob routed = clusterRegistryService.routeJobId(flinkJobId);
+        String targetBaseUrl = routed.cluster().getRestUrl();
+        String actualJobId = routed.actualJobId();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("drain", false);
 
         Map<?, ?> triggerResult;
         try {
-            triggerResult = restTemplate.postForObject(baseUrl + "/v1/jobs/" + flinkJobId + "/stop", body, Map.class);
+            triggerResult = restTemplate.postForObject(targetBaseUrl + "/v1/jobs/" + actualJobId + "/stop", body, Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "触发停止失败：" + exception.getMessage());
         }
@@ -341,7 +372,7 @@ public class FlinkStreamSubmissionClient {
             sleepOneSecond();
             Map<?, ?> statusResult;
             try {
-                statusResult = restTemplate.getForObject(baseUrl + "/v1/jobs/" + flinkJobId + "/savepoints/" + triggerId, Map.class);
+                statusResult = restTemplate.getForObject(targetBaseUrl + "/v1/jobs/" + actualJobId + "/savepoints/" + triggerId, Map.class);
             } catch (Exception exception) {
                 continue;
             }
@@ -360,6 +391,54 @@ public class FlinkStreamSubmissionClient {
             }
         }
         throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "等待停止确认超时（30秒）");
+    }
+
+    /**
+     * A graceful stop-with-savepoint requires the job to be able to complete
+     * a checkpoint, which a job crash-looping (e.g. the Oracle Avro
+     * nullable-union incompatibility) generally can't - the operator's
+     * "click stop, have it actually stop" expectation doesn't care about
+     * that nuance, so fall back to an unconditional cancel (no savepoint,
+     * but it works regardless of task state) whenever the graceful path
+     * fails, instead of surfacing the failure and making them retry by hand.
+     */
+    public String stopOrCancel(String flinkJobId) {
+        try {
+            return stopWithSavepoint(flinkJobId);
+        } catch (ResponseStatusException exception) {
+            cancel(flinkJobId);
+            return null;
+        }
+    }
+
+    /**
+     * Flink's REST API cancel is PATCH /jobs/:id?mode=cancel - RestTemplate's
+     * default HttpURLConnection-backed factory can't send PATCH at all
+     * (JDK limitation), and this project deliberately avoids pulling in
+     * Apache HttpClient5 here (see pom.xml's S3Client comment: Spring Boot's
+     * managed httpclient5 version is incompatible with this project's other
+     * pinned versions). java.net.http.HttpClient (built into the JDK since
+     * 11) supports arbitrary methods natively, so use it for just this call.
+     */
+    private void cancel(String flinkJobId) {
+        FlinkClusterRegistryService.RoutedJob routed = clusterRegistryService.routeJobId(flinkJobId);
+        try {
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(routed.cluster().getRestUrl() + "/v1/jobs/" + routed.actualJobId() + "?mode=cancel"))
+                .method("PATCH", java.net.http.HttpRequest.BodyPublishers.noBody())
+                .timeout(java.time.Duration.ofSeconds(15))
+                .build();
+            java.net.http.HttpResponse<Void> response = java.net.http.HttpClient.newHttpClient()
+                .send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() >= 300) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "强制取消失败：HTTP " + response.statusCode());
+            }
+        } catch (java.io.IOException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "强制取消失败：" + exception.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "强制取消被中断");
+        }
     }
 
     /**

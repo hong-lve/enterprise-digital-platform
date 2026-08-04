@@ -41,9 +41,13 @@ public class FlinkCapacityInspector {
     }
 
     public void requireCapacity(int parallelism, String environment) {
+        requireCapacity(baseUrl, parallelism, environment);
+    }
+
+    public void requireCapacity(String targetBaseUrl, int parallelism, String environment) {
         Map<?, ?> result;
         try {
-            result = restTemplate.getForObject(baseUrl + "/overview", Map.class);
+            result = restTemplate.getForObject(targetBaseUrl + "/overview", Map.class);
         } catch (Exception exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法连接 Flink JobManager 检查集群容量：" + exception.getMessage());
         }

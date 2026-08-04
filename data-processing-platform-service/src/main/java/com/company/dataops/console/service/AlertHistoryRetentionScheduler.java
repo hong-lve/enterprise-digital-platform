@@ -1,5 +1,7 @@
 package com.company.dataops.console.service;
 
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.dataops.console.entity.AlertHistoryEntity;
 import com.company.dataops.console.mapper.AlertHistoryMapper;
@@ -32,6 +34,7 @@ public class AlertHistoryRetentionScheduler {
         this.retentionDays = retentionDays;
     }
 
+    @ClusterSingleton(value = "alert-history-retention", lockAtMostSeconds = 1800)
     @Scheduled(initialDelay = 60_000L, fixedDelay = 24 * 60 * 60 * 1000L)
     public void purgeOldRecords() {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(retentionDays);

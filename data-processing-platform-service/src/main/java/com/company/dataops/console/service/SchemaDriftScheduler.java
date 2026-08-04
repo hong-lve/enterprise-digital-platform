@@ -13,6 +13,7 @@ import com.company.dataops.console.mapper.SchemaSnapshotMapper;
 import com.company.dataops.console.service.kafka.AvroSchemaDiffService;
 import com.company.dataops.console.service.kafka.SchemaRegistryClient;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
+import com.company.dataops.console.service.coordination.ClusterSingleton;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -77,6 +78,7 @@ public class SchemaDriftScheduler {
         this.frontendUrl = frontendUrl;
     }
 
+    @ClusterSingleton(value = "schema-drift", lockAtMostSeconds = 600)
     @Scheduled(fixedDelay = 120000, initialDelay = 60000)
     public void checkForDrift() {
         List<CdcSourceEntity> sources = cdcSourceMapper.selectList(new LambdaQueryWrapper<CdcSourceEntity>()

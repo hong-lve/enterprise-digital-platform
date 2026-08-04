@@ -12,14 +12,17 @@ import com.company.dataops.console.mapper.FlinkSqlJobMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.RealtimeAlertService;
 import com.company.dataops.console.service.approval.ChangeApprovalService;
+import com.company.dataops.console.service.coordination.JobOperationCoordinator;
 import com.company.dataops.console.service.flink.FlinkSqlGatewayClient;
 import com.company.dataops.console.service.flink.FlinkSqlJobSubmissionService;
 import com.company.dataops.console.service.flink.FlinkSqlReplayService;
+import com.company.dataops.console.service.flink.FlinkSqlSecretResolver;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
 import com.company.dataops.console.service.versioning.JobVersionSnapshotService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import java.time.Duration;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -31,6 +34,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -54,7 +58,9 @@ public class FlinkSqlJobController {
     private final EnvironmentGuard environmentGuard;
     private final ChangeApprovalService changeApprovalService;
     private final JobVersionSnapshotService jobVersionSnapshotService;
+    private final JobOperationCoordinator jobOperationCoordinator;
     private final ObjectMapper objectMapper;
+    private final FlinkSqlSecretResolver flinkSqlSecretResolver;
     private final String frontendUrl;
 
     public FlinkSqlJobController(
@@ -66,7 +72,9 @@ public class FlinkSqlJobController {
         EnvironmentGuard environmentGuard,
         ChangeApprovalService changeApprovalService,
         JobVersionSnapshotService jobVersionSnapshotService,
+        JobOperationCoordinator jobOperationCoordinator,
         ObjectMapper objectMapper,
+        FlinkSqlSecretResolver flinkSqlSecretResolver,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.flinkSqlJobMapper = flinkSqlJobMapper;
@@ -77,7 +85,9 @@ public class FlinkSqlJobController {
         this.environmentGuard = environmentGuard;
         this.changeApprovalService = changeApprovalService;
         this.jobVersionSnapshotService = jobVersionSnapshotService;
+        this.jobOperationCoordinator = jobOperationCoordinator;
         this.objectMapper = objectMapper;
+        this.flinkSqlSecretResolver = flinkSqlSecretResolver;
         this.frontendUrl = frontendUrl;
         changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_SQL_JOB_DELETE, this::applyDelete);
         changeApprovalService.register(ChangeApprovalService.ActionType.FLINK_SQL_JOB_STOP, this::applyStop);
@@ -103,6 +113,7 @@ public class FlinkSqlJobController {
     @PostMapping
     @PreAuthorize("hasAuthority('realtime:sql-job:create')")
     public ApiResponse<FlinkSqlJobEntity> create(@Valid @RequestBody FlinkSqlJobEntity job) {
+        flinkSqlSecretResolver.requireReferencesOnly(job.getSqlScript());
         flinkSqlJobSubmissionService.assertJobShape(FlinkSqlGatewayClient.splitStatements(job.getSqlScript()));
         if (job.getEnvironment() == null || job.getEnvironment().isBlank()) {
             job.setEnvironment("DEV");
@@ -119,6 +130,7 @@ public class FlinkSqlJobController {
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('realtime:sql-job:update')")
     public ApiResponse<Void> update(@PathVariable Long id, @Valid @RequestBody FlinkSqlJobEntity job) {
+        flinkSqlSecretResolver.requireReferencesOnly(job.getSqlScript());
         flinkSqlJobSubmissionService.assertJobShape(FlinkSqlGatewayClient.splitStatements(job.getSqlScript()));
         FlinkSqlJobEntity existing = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(existing.getEnvironment());
@@ -161,7 +173,15 @@ public class FlinkSqlJobController {
 
     @PostMapping("/{id}/start")
     @PreAuthorize("hasAuthority('realtime:sql-job:start')")
-    public ApiResponse<FlinkSqlJobEntity> start(@PathVariable Long id) {
+    public ApiResponse<FlinkSqlJobEntity> start(
+        @PathVariable Long id,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+    ) {
+        return jobOperationCoordinator.execute(ENTITY_TYPE, id, "START", idempotencyKey, Duration.ofMinutes(5),
+            () -> startUnlocked(id));
+    }
+
+    private ApiResponse<FlinkSqlJobEntity> startUnlocked(Long id) {
         FlinkSqlJobEntity job = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
         if (Boolean.TRUE.equals(job.getSchemaBlocked())) {
@@ -229,8 +249,13 @@ public class FlinkSqlJobController {
     }
 
     private void applyStop(Long id) {
+        jobOperationCoordinator.execute(ENTITY_TYPE, id, "STOP", null, Duration.ofMinutes(10),
+            () -> applyStopUnlocked(id));
+    }
+
+    private void applyStopUnlocked(Long id) {
         FlinkSqlJobEntity job = requireJob(id);
-        String savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
+        String savepointPath = flinkStreamSubmissionClient.stopOrCancel(job.getFlinkJobId());
         job.setStatus("CANCELED");
         job.setSavepointPath(savepointPath);
         // Targeted update - see FlinkStreamJobController.applyStop()'s
@@ -320,6 +345,11 @@ public class FlinkSqlJobController {
     }
 
     private void applyReplay(Long id, String payload) {
+        jobOperationCoordinator.execute(ENTITY_TYPE, id, "REPLAY", null, Duration.ofMinutes(10),
+            () -> applyReplayUnlocked(id, payload));
+    }
+
+    private void applyReplayUnlocked(Long id, String payload) {
         ReplayRequest request;
         try {
             request = objectMapper.readValue(payload, ReplayRequest.class);
@@ -401,6 +431,11 @@ public class FlinkSqlJobController {
     }
 
     private void applyRollback(Long id, String payload) {
+        jobOperationCoordinator.execute(ENTITY_TYPE, id, "ROLLBACK", null, Duration.ofMinutes(10),
+            () -> applyRollbackUnlocked(id, payload));
+    }
+
+    private void applyRollbackUnlocked(Long id, String payload) {
         int versionNo = Integer.parseInt(payload);
         FlinkSqlJobEntity existing = requireJob(id);
         JobVersionSnapshotEntity target = jobVersionSnapshotService.requireVersion(ENTITY_TYPE, id, versionNo);
@@ -410,20 +445,20 @@ public class FlinkSqlJobController {
         targetConfig.setFlinkJobId(null);
         targetConfig.setSavepointPath(null);
         targetConfig.setLastError(null);
-        setDeploymentState(id, "PREPARING", "正在准备回滚至版本 " + versionNo);
+        setDeploymentState(id, "PREPARING", "ROLLBACK", "正在准备回滚至版本 " + versionNo);
         if ("RUNNING".equals(existing.getStatus()) && existing.getFlinkJobId() != null) {
             try {
-                setDeploymentState(id, "STOPPING", "正在停止当前实例");
+                setDeploymentState(id, "STOPPING", "ROLLBACK", "正在停止当前实例");
                 // Deliberately discarded - see FlinkStreamJobController's identical comment.
                 flinkStreamSubmissionClient.stopWithSavepoint(existing.getFlinkJobId());
             } catch (Exception exception) {
-                setDeploymentState(id, "ROLLBACK", "无法停止当前实例，已保留当前配置和运行状态：" + exception.getMessage());
+                setDeploymentState(id, "ROLLBACK", "ROLLBACK", "无法停止当前实例，已保留当前配置和运行状态：" + exception.getMessage());
                 return;
             }
         }
 
         flinkSqlJobMapper.updateById(targetConfig);
-        setDeploymentState(id, "DEPLOYING", "正在部署版本 " + versionNo);
+        setPendingDeployment(id, "ROLLBACK", target.getSavepointPath(), "正在部署版本 " + versionNo);
         FlinkSqlJobEntity toSubmit = requireJob(id);
         toSubmit.setSavepointPath(target.getSavepointPath());
         try {
@@ -434,6 +469,7 @@ public class FlinkSqlJobController {
                 .set(FlinkSqlJobEntity::getStatus, "STARTING")
                 .set(FlinkSqlJobEntity::getDeploymentStatus, "VERIFYING")
                 .set(FlinkSqlJobEntity::getDeploymentMessage, "回滚实例已提交，等待 Flink 确认运行")
+                .set(FlinkSqlJobEntity::getDeploymentUpdatedAt, java.time.LocalDateTime.now())
                 .set(FlinkSqlJobEntity::getSavepointPath, target.getSavepointPath())
                 .set(FlinkSqlJobEntity::getLastError, null));
             jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), flinkJobId, "回滚至版本 " + versionNo, versionNo);
@@ -443,17 +479,30 @@ public class FlinkSqlJobController {
                 .set(FlinkSqlJobEntity::getStatus, "FAILED")
                 .set(FlinkSqlJobEntity::getDeploymentStatus, "ROLLBACK")
                 .set(FlinkSqlJobEntity::getDeploymentMessage, "目标版本启动失败")
+                .set(FlinkSqlJobEntity::getDeploymentUpdatedAt, java.time.LocalDateTime.now())
                 .set(FlinkSqlJobEntity::getSavepointPath, target.getSavepointPath())
                 .set(FlinkSqlJobEntity::getLastError, "回滚失败：版本 " + versionNo + " 的配置启动失败（" + exception.getMessage() + "）"));
             jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), null, "回滚至版本 " + versionNo + "（部署失败）", versionNo);
         }
     }
 
-    private void setDeploymentState(Long id, String state, String message) {
+    private void setDeploymentState(Long id, String state, String operation, String message) {
         flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
             .eq(FlinkSqlJobEntity::getId, id)
             .set(FlinkSqlJobEntity::getDeploymentStatus, state)
-            .set(FlinkSqlJobEntity::getDeploymentMessage, message));
+            .set(FlinkSqlJobEntity::getDeploymentOperation, operation)
+            .set(FlinkSqlJobEntity::getDeploymentMessage, message)
+            .set(FlinkSqlJobEntity::getDeploymentUpdatedAt, java.time.LocalDateTime.now()));
+    }
+
+    private void setPendingDeployment(Long id, String operation, String resumePath, String message) {
+        flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+            .eq(FlinkSqlJobEntity::getId, id)
+            .set(FlinkSqlJobEntity::getDeploymentStatus, "DEPLOYING")
+            .set(FlinkSqlJobEntity::getDeploymentOperation, operation)
+            .set(FlinkSqlJobEntity::getPendingResumePath, resumePath)
+            .set(FlinkSqlJobEntity::getDeploymentMessage, message)
+            .set(FlinkSqlJobEntity::getDeploymentUpdatedAt, java.time.LocalDateTime.now()));
     }
 
     /** Config-only copy for diffing/rollback - nulls out everything that's a runtime fact rather than part of the definition. */

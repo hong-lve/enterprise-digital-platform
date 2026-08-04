@@ -8,6 +8,8 @@ import com.company.dataops.console.service.flink.FlinkBackpressureInspector;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
 import com.company.dataops.console.service.kafka.KafkaConsumerLagInspector;
 import com.company.dataops.console.service.recovery.RecoveryOrchestrator;
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import java.util.Arrays;
 import java.util.List;
 import org.slf4j.Logger;
@@ -44,6 +46,7 @@ public class FlinkStreamJobPollingScheduler {
     private final String frontendUrl;
     private final double backpressureAlertThreshold;
     private final long consumerLagAlertThreshold;
+    private final RealtimeMetrics metrics;
 
     public FlinkStreamJobPollingScheduler(
         FlinkStreamJobMapper flinkStreamJobMapper,
@@ -52,6 +55,7 @@ public class FlinkStreamJobPollingScheduler {
         KafkaConsumerLagInspector kafkaConsumerLagInspector,
         RealtimeAlertService realtimeAlertService,
         RecoveryOrchestrator recoveryOrchestrator,
+        RealtimeMetrics metrics,
         @Value("${platform.web.frontend-url}") String frontendUrl,
         @Value("${platform.bigdata.flink-backpressure-alert-threshold:0.5}") double backpressureAlertThreshold,
         @Value("${platform.bigdata.flink-consumer-lag-alert-threshold:500}") long consumerLagAlertThreshold
@@ -62,11 +66,13 @@ public class FlinkStreamJobPollingScheduler {
         this.kafkaConsumerLagInspector = kafkaConsumerLagInspector;
         this.realtimeAlertService = realtimeAlertService;
         this.recoveryOrchestrator = recoveryOrchestrator;
+        this.metrics = metrics;
         this.frontendUrl = frontendUrl;
         this.backpressureAlertThreshold = backpressureAlertThreshold;
         this.consumerLagAlertThreshold = consumerLagAlertThreshold;
     }
 
+    @ClusterSingleton(value = "flink-stream-job-poll", lockAtMostSeconds = 120)
     @Scheduled(fixedDelay = 15000)
     public void pollRunningJobs() {
         // FAILED jobs have to stay in this query too, not just RUNNING ones -
@@ -179,6 +185,8 @@ public class FlinkStreamJobPollingScheduler {
             .set(FlinkStreamJobEntity::getStatus, "RUNNING")
             .set(FlinkStreamJobEntity::getDeploymentStatus, "RUNNING")
             .set(FlinkStreamJobEntity::getDeploymentMessage, null)
+            .set(FlinkStreamJobEntity::getPendingResumePath, null)
+            .set(FlinkStreamJobEntity::getDeploymentUpdatedAt, java.time.LocalDateTime.now())
             .set(FlinkStreamJobEntity::getLastError, null)
             .set(FlinkStreamJobEntity::getAlertState, "OK"));
         job.setStatus("RUNNING");
@@ -224,6 +232,7 @@ public class FlinkStreamJobPollingScheduler {
         }
         List<String> topics = Arrays.stream(job.getKafkaTopics().split(",")).map(String::trim).toList();
         Long lag = kafkaConsumerLagInspector.totalLag(job.getKafkaConsumerGroupId(), topics);
+        metrics.lag("kafka_records", lag);
         job.setConsumerLagRecords(lag);
 
         boolean lagging = lag != null && lag > consumerLagAlertThreshold;

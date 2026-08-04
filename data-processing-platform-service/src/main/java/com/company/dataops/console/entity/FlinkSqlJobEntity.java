@@ -35,6 +35,9 @@ public class FlinkSqlJobEntity {
     private String status;
     private String deploymentStatus;
     private String deploymentMessage;
+    private String deploymentOperation;
+    private String pendingResumePath;
+    private LocalDateTime deploymentUpdatedAt;
     private Boolean schemaBlocked;
     private String schemaBlockReason;
     private String lastError;
@@ -53,6 +56,7 @@ public class FlinkSqlJobEntity {
     private String oracleSinkTables;
     private String redisSinkTables;
     private String environment;
+    private Long clusterId;
     private String owner;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

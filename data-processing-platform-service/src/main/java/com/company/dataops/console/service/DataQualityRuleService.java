@@ -11,6 +11,7 @@ import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
 import com.company.dataops.console.service.datasource.SqlIdentifierValidator;
 import com.company.dataops.console.service.query.QueryResult;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -45,19 +46,22 @@ public class DataQualityRuleService {
     private final DataSourceMapper dataSourceMapper;
     private final DataSourceConnectionService dataSourceConnectionService;
     private final RealtimeAlertService alertService;
+    private final RealtimeMetrics metrics;
 
     public DataQualityRuleService(
         DataQualityRuleMapper dataQualityRuleMapper,
         DataQualityViolationMapper dataQualityViolationMapper,
         DataSourceMapper dataSourceMapper,
         DataSourceConnectionService dataSourceConnectionService,
-        RealtimeAlertService alertService
+        RealtimeAlertService alertService,
+        RealtimeMetrics metrics
     ) {
         this.dataQualityRuleMapper = dataQualityRuleMapper;
         this.dataQualityViolationMapper = dataQualityViolationMapper;
         this.dataSourceMapper = dataSourceMapper;
         this.dataSourceConnectionService = dataSourceConnectionService;
         this.alertService = alertService;
+        this.metrics = metrics;
     }
 
     public void runAllEnabled() {
@@ -181,6 +185,7 @@ public class DataQualityRuleService {
     private void applyResult(DataQualityRuleEntity rule, boolean violated, Double metricValue, Integer violationCount, List<DataQualityViolationEntity> violationRows) {
         String previousResult = rule.getLastResult();
         String newResult = violated ? "VIOLATION" : "OK";
+        metrics.dataQuality(newResult);
 
         dataQualityRuleMapper.update(null, new LambdaUpdateWrapper<DataQualityRuleEntity>()
             .eq(DataQualityRuleEntity::getId, rule.getId())

@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.CdcSourceEntity;
 import com.company.dataops.console.mapper.CdcSourceMapper;
 import com.company.dataops.console.service.kafka.CdcLagInspector;
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import com.company.dataops.console.service.kafka.KafkaConnectClient;
 import com.company.dataops.console.service.recovery.RecoveryOrchestrator;
 import java.util.List;
@@ -37,6 +39,7 @@ public class CdcSourceStatusScheduler {
     private final RecoveryOrchestrator recoveryOrchestrator;
     private final RealtimeAlertService realtimeAlertService;
     private final String frontendUrl;
+    private final RealtimeMetrics metrics;
 
     public CdcSourceStatusScheduler(
         CdcSourceMapper cdcSourceMapper,
@@ -44,6 +47,7 @@ public class CdcSourceStatusScheduler {
         CdcLagInspector cdcLagInspector,
         RecoveryOrchestrator recoveryOrchestrator,
         RealtimeAlertService realtimeAlertService,
+        RealtimeMetrics metrics,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.cdcSourceMapper = cdcSourceMapper;
@@ -51,9 +55,11 @@ public class CdcSourceStatusScheduler {
         this.cdcLagInspector = cdcLagInspector;
         this.recoveryOrchestrator = recoveryOrchestrator;
         this.realtimeAlertService = realtimeAlertService;
+        this.metrics = metrics;
         this.frontendUrl = frontendUrl;
     }
 
+    @ClusterSingleton(value = "cdc-source-status", lockAtMostSeconds = 120)
     @Scheduled(fixedDelay = 15000)
     public void pollRunningSources() {
         // FAILED sources have to stay in this query too, not just RUNNING
@@ -195,5 +201,6 @@ public class CdcSourceStatusScheduler {
         cdcSourceMapper.update(null, new LambdaUpdateWrapper<CdcSourceEntity>()
             .eq(CdcSourceEntity::getId, source.getId())
             .set(CdcSourceEntity::getLagSeconds, maxLagSeconds));
+        metrics.lag("cdc_seconds", maxLagSeconds);
     }
 }

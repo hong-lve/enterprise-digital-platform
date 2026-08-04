@@ -1,5 +1,7 @@
 package com.company.dataops.console.service;
 
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -19,6 +21,7 @@ public class DataReconciliationScheduler {
         this.reconciliationService = reconciliationService;
     }
 
+    @ClusterSingleton(value = "data-reconciliation", lockAtMostSeconds = 600)
     @Scheduled(fixedDelay = 120000)
     public void poll() {
         reconciliationService.runAllEnabled();

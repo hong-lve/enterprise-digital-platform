@@ -1,6 +1,7 @@
 package com.company.dataops.console.service.flink;
 
 import com.company.dataops.console.entity.FlinkSqlJobEntity;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -31,18 +32,29 @@ public class FlinkSqlJobSubmissionService {
 
     private final FlinkSqlGatewayClient client;
     private final FlinkCapacityInspector capacityInspector;
+    private final FlinkSqlSecretResolver secretResolver;
+    private final RealtimeMetrics metrics;
+    private final FlinkClusterRegistryService clusterRegistryService;
 
-    public FlinkSqlJobSubmissionService(FlinkSqlGatewayClient client, FlinkCapacityInspector capacityInspector) {
+    public FlinkSqlJobSubmissionService(FlinkSqlGatewayClient client, FlinkCapacityInspector capacityInspector,
+                                        FlinkSqlSecretResolver secretResolver, RealtimeMetrics metrics,
+                                        FlinkClusterRegistryService clusterRegistryService) {
         this.client = client;
         this.capacityInspector = capacityInspector;
+        this.secretResolver = secretResolver;
+        this.metrics = metrics;
+        this.clusterRegistryService = clusterRegistryService;
     }
 
     public String submit(FlinkSqlJobEntity job) {
-        List<String> statements = FlinkSqlGatewayClient.splitStatements(job.getSqlScript());
+        String materializedSql = secretResolver.resolveForSubmission(job.getSqlScript());
+        List<String> statements = FlinkSqlGatewayClient.splitStatements(materializedSql);
         assertJobShape(statements);
-        capacityInspector.requireCapacity(job.getParallelism() == null ? 1 : job.getParallelism(), job.getEnvironment());
-
-        String sessionHandle = client.openSession(buildProperties(job));
+        var cluster = clusterRegistryService.resolve(job.getClusterId(), job.getEnvironment());
+        if (cluster.getRestUrl() != null && !cluster.getRestUrl().isBlank()) {
+            capacityInspector.requireCapacity(cluster.getRestUrl(), job.getParallelism() == null ? 1 : job.getParallelism(), job.getEnvironment());
+        }
+        String sessionHandle = client.openSession(buildProperties(job), cluster.getId(), job.getEnvironment());
         try {
             String jobId = null;
             for (String statement : statements) {
@@ -56,7 +68,11 @@ public class FlinkSqlJobSubmissionService {
             if (jobId == null) {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "提交失败：没有拿到 Flink job id");
             }
-            return jobId;
+            metrics.jobSubmission("sql", true);
+            return clusterRegistryService.encodeJobId(cluster, jobId);
+        } catch (RuntimeException exception) {
+            metrics.jobSubmission("sql", false);
+            throw exception;
         } finally {
             client.closeSession(sessionHandle);
         }

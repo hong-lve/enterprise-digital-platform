@@ -1,5 +1,7 @@
 package com.company.dataops.console.service.monitoring;
 
+import com.company.dataops.console.service.coordination.ClusterSingleton;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.dataops.console.entity.ContainerEventEntity;
 import com.company.dataops.console.entity.ContainerStatusEntity;
@@ -51,6 +53,7 @@ public class ContainerMonitoringScheduler {
         this.node = node;
     }
 
+    @ClusterSingleton(value = "container-monitoring", lockAtMostSeconds = 300)
     @Scheduled(fixedDelay = 30000)
     @SuppressWarnings("unchecked")
     public void poll() {

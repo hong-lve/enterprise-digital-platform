@@ -13,6 +13,7 @@ import com.company.dataops.console.entity.FlinkStreamJobEntity;
 import com.company.dataops.console.mapper.FlinkCheckpointHistoryMapper;
 import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
+import com.company.dataops.console.service.monitoring.RealtimeMetrics;
 import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
@@ -45,7 +46,7 @@ class FlinkCheckpointHistorySchedulerTest {
         when(client.checkpointHistory("job-1")).thenReturn(List.of(
             record(2L, "IN_PROGRESS", 200L), record(1L, "FAILED", 100L)));
 
-        new FlinkCheckpointHistoryScheduler(jobMapper, historyMapper, client, alerts, "http://frontend")
+        new FlinkCheckpointHistoryScheduler(jobMapper, historyMapper, client, alerts, mock(RealtimeMetrics.class), "http://frontend")
             .pollCheckpointHistory();
 
         verify(alerts, never()).notifyRecovery(any(), any(), any(), any());
