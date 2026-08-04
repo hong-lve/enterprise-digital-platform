@@ -6,6 +6,7 @@ import com.company.dataops.console.entity.AlertRetryQueueEntity;
 import com.company.dataops.console.mapper.AlertRetryQueueMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 /**
@@ -19,6 +20,7 @@ public class AlertRetryQueueService {
     private static final int[] BACKOFF_SECONDS = {30, 120, 600};
 
     private final AlertRetryQueueMapper alertRetryQueueMapper;
+    private final String instanceId = UUID.randomUUID().toString();
 
     public AlertRetryQueueService(AlertRetryQueueMapper alertRetryQueueMapper) {
         this.alertRetryQueueMapper = alertRetryQueueMapper;
@@ -37,27 +39,35 @@ public class AlertRetryQueueService {
         alertRetryQueueMapper.insert(entry);
     }
 
-    public List<AlertRetryQueueEntity> due() {
-        return alertRetryQueueMapper.selectList(new LambdaQueryWrapper<AlertRetryQueueEntity>()
-            .eq(AlertRetryQueueEntity::getStatus, "PENDING")
-            .le(AlertRetryQueueEntity::getNextAttemptAt, LocalDateTime.now()));
+    public List<AlertRetryQueueEntity> claimDue(int limit) {
+        return alertRetryQueueMapper.selectClaimCandidates(limit).stream()
+            .filter(entry -> alertRetryQueueMapper.claim(entry.getId(), instanceId, 120) == 1)
+            .peek(entry -> entry.setLockOwner(instanceId))
+            .toList();
     }
 
     public void recordSuccess(AlertRetryQueueEntity entry) {
         alertRetryQueueMapper.update(null, new LambdaUpdateWrapper<AlertRetryQueueEntity>()
             .eq(AlertRetryQueueEntity::getId, entry.getId())
-            .set(AlertRetryQueueEntity::getStatus, "SUCCEEDED"));
+            .eq(AlertRetryQueueEntity::getLockOwner, instanceId)
+            .set(AlertRetryQueueEntity::getStatus, "SUCCEEDED")
+            .set(AlertRetryQueueEntity::getLockOwner, null)
+            .set(AlertRetryQueueEntity::getLockUntil, null));
     }
 
     public void recordFailure(AlertRetryQueueEntity entry, String error) {
         int attempts = entry.getAttempts() + 1;
         LambdaUpdateWrapper<AlertRetryQueueEntity> update = new LambdaUpdateWrapper<AlertRetryQueueEntity>()
             .eq(AlertRetryQueueEntity::getId, entry.getId())
+            .eq(AlertRetryQueueEntity::getLockOwner, instanceId)
             .set(AlertRetryQueueEntity::getAttempts, attempts)
-            .set(AlertRetryQueueEntity::getLastError, error);
+            .set(AlertRetryQueueEntity::getLastError, error)
+            .set(AlertRetryQueueEntity::getLockOwner, null)
+            .set(AlertRetryQueueEntity::getLockUntil, null);
         if (attempts >= entry.getMaxAttempts()) {
             update.set(AlertRetryQueueEntity::getStatus, "FAILED");
         } else {
+            update.set(AlertRetryQueueEntity::getStatus, "PENDING");
             update.set(AlertRetryQueueEntity::getNextAttemptAt, LocalDateTime.now().plusSeconds(BACKOFF_SECONDS[attempts]));
         }
         alertRetryQueueMapper.update(null, update);

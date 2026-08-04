@@ -17,6 +17,8 @@ public class AlertRetryQueueEntity {
     private Integer maxAttempts;
     private LocalDateTime nextAttemptAt;
     private String status;
+    private String lockOwner;
+    private LocalDateTime lockUntil;
     private String lastError;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

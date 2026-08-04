@@ -164,6 +164,9 @@ public class FlinkSqlJobController {
     public ApiResponse<FlinkSqlJobEntity> start(@PathVariable Long id) {
         FlinkSqlJobEntity job = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
+        if (Boolean.TRUE.equals(job.getSchemaBlocked())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "作业已被 Schema 兼容性保护阻断：" + job.getSchemaBlockReason());
+        }
         if (job.getFlinkJobId() != null && flinkStreamSubmissionClient.isRunning(job.getFlinkJobId())) {
             // Already running on the cluster - see FlinkStreamSubmissionClient.isRunning()'s
             // own comment for why a fresh submit() here would be actively harmful.
@@ -256,6 +259,20 @@ public class FlinkSqlJobController {
         return ApiResponse.ok(job);
     }
 
+    @PostMapping("/{id}/clear-schema-block")
+    @PreAuthorize("hasAuthority('realtime:sql-job:update')")
+    public ApiResponse<FlinkSqlJobEntity> clearSchemaBlock(@PathVariable Long id) {
+        FlinkSqlJobEntity job = requireJob(id);
+        environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
+        flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+            .eq(FlinkSqlJobEntity::getId, id)
+            .set(FlinkSqlJobEntity::getSchemaBlocked, false)
+            .set(FlinkSqlJobEntity::getSchemaBlockReason, null));
+        job.setSchemaBlocked(false);
+        job.setSchemaBlockReason(null);
+        return ApiResponse.ok(job);
+    }
+
     /**
      * Tier 3 item 1 of the reliability roadmap ("历史数据回放") - resubmits
      * the job reading its Kafka source(s) from a specific point in time (or
@@ -272,6 +289,9 @@ public class FlinkSqlJobController {
     public ApiResponse<ActionResult> replay(@PathVariable Long id, @RequestBody ReplayRequest request) {
         FlinkSqlJobEntity job = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(job.getEnvironment());
+        if (Boolean.TRUE.equals(job.getSchemaBlocked())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "请先确认 Schema 兼容性并解除阻断，再执行回放");
+        }
         if (job.getFlinkJobId() != null && flinkStreamSubmissionClient.isRunning(job.getFlinkJobId())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "作业正在运行中，请先停止再重放");
         }
@@ -366,6 +386,9 @@ public class FlinkSqlJobController {
     public ApiResponse<ActionResult> rollback(@PathVariable Long id, @PathVariable Integer versionNo) {
         FlinkSqlJobEntity existing = requireJob(id);
         environmentGuard.requirePermissionForEnvironment(existing.getEnvironment());
+        if (Boolean.TRUE.equals(existing.getSchemaBlocked())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "请先确认 Schema 兼容性并解除阻断，再执行回滚");
+        }
         jobVersionSnapshotService.requireVersion(ENTITY_TYPE, id, versionNo); // 404s early if the version doesn't exist
         String payload = String.valueOf(versionNo);
         ChangeApprovalService.GateResult gate = changeApprovalService.gateWithPayload(
@@ -387,29 +410,30 @@ public class FlinkSqlJobController {
         targetConfig.setFlinkJobId(null);
         targetConfig.setSavepointPath(null);
         targetConfig.setLastError(null);
-        flinkSqlJobMapper.updateById(targetConfig);
-
+        setDeploymentState(id, "PREPARING", "正在准备回滚至版本 " + versionNo);
         if ("RUNNING".equals(existing.getStatus()) && existing.getFlinkJobId() != null) {
             try {
+                setDeploymentState(id, "STOPPING", "正在停止当前实例");
                 // Deliberately discarded - see FlinkStreamJobController's identical comment.
                 flinkStreamSubmissionClient.stopWithSavepoint(existing.getFlinkJobId());
             } catch (Exception exception) {
-                flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
-                    .eq(FlinkSqlJobEntity::getId, id)
-                    .set(FlinkSqlJobEntity::getStatus, "FAILED")
-                    .set(FlinkSqlJobEntity::getLastError, "回滚失败：无法停止当前运行实例（" + exception.getMessage() + "），请人工检查"));
+                setDeploymentState(id, "ROLLBACK", "无法停止当前实例，已保留当前配置和运行状态：" + exception.getMessage());
                 return;
             }
         }
 
-        FlinkSqlJobEntity toSubmit = requireJob(id); // reload - now has version N's config
+        flinkSqlJobMapper.updateById(targetConfig);
+        setDeploymentState(id, "DEPLOYING", "正在部署版本 " + versionNo);
+        FlinkSqlJobEntity toSubmit = requireJob(id);
         toSubmit.setSavepointPath(target.getSavepointPath());
         try {
             String flinkJobId = flinkSqlJobSubmissionService.submit(toSubmit);
             flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
                 .eq(FlinkSqlJobEntity::getId, id)
                 .set(FlinkSqlJobEntity::getFlinkJobId, flinkJobId)
-                .set(FlinkSqlJobEntity::getStatus, "RUNNING")
+                .set(FlinkSqlJobEntity::getStatus, "STARTING")
+                .set(FlinkSqlJobEntity::getDeploymentStatus, "VERIFYING")
+                .set(FlinkSqlJobEntity::getDeploymentMessage, "回滚实例已提交，等待 Flink 确认运行")
                 .set(FlinkSqlJobEntity::getSavepointPath, target.getSavepointPath())
                 .set(FlinkSqlJobEntity::getLastError, null));
             jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), flinkJobId, "回滚至版本 " + versionNo, versionNo);
@@ -417,10 +441,19 @@ public class FlinkSqlJobController {
             flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
                 .eq(FlinkSqlJobEntity::getId, id)
                 .set(FlinkSqlJobEntity::getStatus, "FAILED")
+                .set(FlinkSqlJobEntity::getDeploymentStatus, "ROLLBACK")
+                .set(FlinkSqlJobEntity::getDeploymentMessage, "目标版本启动失败")
                 .set(FlinkSqlJobEntity::getSavepointPath, target.getSavepointPath())
                 .set(FlinkSqlJobEntity::getLastError, "回滚失败：版本 " + versionNo + " 的配置启动失败（" + exception.getMessage() + "）"));
             jobVersionSnapshotService.recordVersion(ENTITY_TYPE, id, buildConfigSnapshot(toSubmit), target.getSavepointPath(), null, "回滚至版本 " + versionNo + "（部署失败）", versionNo);
         }
+    }
+
+    private void setDeploymentState(Long id, String state, String message) {
+        flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+            .eq(FlinkSqlJobEntity::getId, id)
+            .set(FlinkSqlJobEntity::getDeploymentStatus, state)
+            .set(FlinkSqlJobEntity::getDeploymentMessage, message));
     }
 
     /** Config-only copy for diffing/rollback - nulls out everything that's a runtime fact rather than part of the definition. */

@@ -95,7 +95,8 @@ public class DataQualityRuleController {
         requireExisting(id);
         return ApiResponse.ok(dataQualityViolationMapper.selectList(new LambdaQueryWrapper<DataQualityViolationEntity>()
             .eq(DataQualityViolationEntity::getRuleId, id)
-            .orderByDesc(DataQualityViolationEntity::getDetectedAt)));
+            .orderByDesc(DataQualityViolationEntity::getDetectedAt)
+            .last("LIMIT 500")));
     }
 
     private DataQualityRuleEntity requireExisting(Long id) {

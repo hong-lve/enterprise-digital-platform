@@ -25,7 +25,7 @@ public class AlertRetryScheduler {
 
     @Scheduled(fixedDelay = 30000)
     public void retryDue() {
-        List<AlertRetryQueueEntity> due = alertRetryQueueService.due();
+        List<AlertRetryQueueEntity> due = alertRetryQueueService.claimDue(100);
         for (AlertRetryQueueEntity entry : due) {
             boolean delivered = webhookAlertSender.send(entry.getTitle(), entry.getContent(), entry.getType(), entry.getLinkUrl());
             if (delivered) {

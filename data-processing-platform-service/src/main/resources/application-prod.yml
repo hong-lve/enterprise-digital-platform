@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL}
+    username: ${MYSQL_USERNAME}
+    password: ${MYSQL_PASSWORD}
+  data:
+    redis:
+      password: ${REDIS_PASSWORD}
+  flyway:
+    validate-on-migrate: true
+
+platform:
+  datasource-encryption-keys: ${DATASOURCE_ENCRYPTION_KEYS}
+  datasource-encryption-current-version: ${DATASOURCE_ENCRYPTION_CURRENT_VERSION}
+  bigdata:
+    jar-storage-access-key: ${JAR_STORAGE_ACCESS_KEY}
+    jar-storage-secret-key: ${JAR_STORAGE_SECRET_KEY}
+    kafka-tls-password: ${KAFKA_TLS_PASSWORD}
+    clickhouse-username: ${CLICKHOUSE_USERNAME}
+    clickhouse-password: ${CLICKHOUSE_PASSWORD}

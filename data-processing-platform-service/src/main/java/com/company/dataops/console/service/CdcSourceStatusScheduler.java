@@ -142,11 +142,11 @@ public class CdcSourceStatusScheduler {
      * attempts via CdcRecoveryTracker, not a blind infinite retry loop.
      */
     private void attemptRecovery(CdcSourceEntity source) {
-        if (recoveryOrchestrator.shouldAttempt("CDC_SOURCE", source.getId())) {
-            recoveryOrchestrator.recordAttempt("CDC_SOURCE", source.getId(), source.getName());
+        if (recoveryOrchestrator.tryAcquire("CDC_SOURCE", source.getId(), source.getName())) {
             try {
                 kafkaConnectClient.restart(source.getConnectorName());
             } catch (Exception exception) {
+                recoveryOrchestrator.releaseLease("CDC_SOURCE", source.getId());
                 LOGGER.warn("Best-effort restart failed for CDC source {} ({}): {}", source.getId(), source.getConnectorName(), exception.getMessage());
             }
         }

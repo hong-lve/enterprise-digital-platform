@@ -76,7 +76,7 @@ public class FlinkStreamJobPollingScheduler {
         // attempt automatic recovery on it, and nothing would notice if it's
         // later fixed by hand outside this app.
         List<FlinkStreamJobEntity> jobs = flinkStreamJobMapper.selectList(new LambdaQueryWrapper<FlinkStreamJobEntity>()
-            .in(FlinkStreamJobEntity::getStatus, "RUNNING", "FAILED")
+            .in(FlinkStreamJobEntity::getStatus, "RUNNING", "STARTING", "FAILED")
             .isNotNull(FlinkStreamJobEntity::getFlinkJobId));
         for (FlinkStreamJobEntity job : jobs) {
             if ("FAILED".equals(job.getStatus())) {
@@ -122,6 +122,12 @@ public class FlinkStreamJobPollingScheduler {
                     .set(FlinkStreamJobEntity::getAlertState, job.getAlertState()));
                 continue; // not healthy right now - backpressure isn't a meaningful question
             }
+            if (!"RUNNING".equals(job.getStatus())) {
+                if (!"运行中：RUNNING".equals(status.message())) {
+                    continue;
+                }
+                confirmRecovered(job);
+            }
             checkBackpressure(job);
             checkConsumerLag(job);
         }
@@ -138,36 +144,45 @@ public class FlinkStreamJobPollingScheduler {
      * equivalent method.
      */
     private void attemptRecovery(FlinkStreamJobEntity job) {
-        if (!recoveryOrchestrator.shouldAttempt("FLINK_JOB", job.getId())) {
+        if (Boolean.TRUE.equals(job.getSchemaBlocked())) {
             return;
         }
-        recoveryOrchestrator.recordAttempt("FLINK_JOB", job.getId(), job.getName());
+        if (!recoveryOrchestrator.tryAcquire("FLINK_JOB", job.getId(), job.getName())) {
+            return;
+        }
         try {
             String flinkJobId = flinkStreamSubmissionClient.submit(job);
-            recoveryOrchestrator.recordRecovered("FLINK_JOB", job.getId(), job.getName());
-            String newAlertState = job.getAlertState();
-            if ("ALERTING".equals(job.getAlertState())) {
-                realtimeAlertService.notifyRecovery(
-                    new RealtimeAlertService.AlertSubject("FLINK_JOB", job.getId(), job.getName(), "JOB_FAILURE"),
-                    job.getOwner(),
-                    "Flink 流作业已自动恢复：" + job.getName(),
-                    frontendUrl + "/realtime/flink-jobs"
-                );
-                newAlertState = "OK";
-            }
             flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
                 .eq(FlinkStreamJobEntity::getId, job.getId())
                 .set(FlinkStreamJobEntity::getFlinkJobId, flinkJobId)
-                .set(FlinkStreamJobEntity::getStatus, "RUNNING")
-                .set(FlinkStreamJobEntity::getLastError, null)
-                .set(FlinkStreamJobEntity::getAlertState, newAlertState));
+                .set(FlinkStreamJobEntity::getStatus, "STARTING"));
         } catch (Exception exception) {
+            recoveryOrchestrator.releaseLease("FLINK_JOB", job.getId());
             // Still FAILED - status/lastError already reflect the original
             // failure from the poll cycle that first detected it; this
             // attempt's own outcome lives in the recovery timeline instead of
             // growing lastError with a repeated suffix every retry.
             LOGGER.warn("Auto-recovery submit failed for Flink job {} ({}): {}", job.getId(), job.getName(), exception.getMessage());
         }
+    }
+
+    private void confirmRecovered(FlinkStreamJobEntity job) {
+        recoveryOrchestrator.recordRecovered("FLINK_JOB", job.getId(), job.getName());
+        if ("ALERTING".equals(job.getAlertState())) {
+            realtimeAlertService.notifyRecovery(
+                new RealtimeAlertService.AlertSubject("FLINK_JOB", job.getId(), job.getName(), "JOB_FAILURE"),
+                job.getOwner(), "Flink 流作业已自动恢复：" + job.getName(), frontendUrl + "/realtime/flink-jobs");
+        }
+        flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+            .eq(FlinkStreamJobEntity::getId, job.getId())
+            .eq(FlinkStreamJobEntity::getFlinkJobId, job.getFlinkJobId())
+            .set(FlinkStreamJobEntity::getStatus, "RUNNING")
+            .set(FlinkStreamJobEntity::getDeploymentStatus, "RUNNING")
+            .set(FlinkStreamJobEntity::getDeploymentMessage, null)
+            .set(FlinkStreamJobEntity::getLastError, null)
+            .set(FlinkStreamJobEntity::getAlertState, "OK"));
+        job.setStatus("RUNNING");
+        job.setAlertState("OK");
     }
 
     private void checkBackpressure(FlinkStreamJobEntity job) {

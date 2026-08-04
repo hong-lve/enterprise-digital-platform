@@ -20,5 +20,7 @@ public class RecoveryStateEntity {
     private Integer attemptsInTier;
     private LocalDateTime lastAttemptAt;
     private String circuitState;
+    private String leaseOwner;
+    private LocalDateTime leaseUntil;
     private LocalDateTime updatedAt;
 }

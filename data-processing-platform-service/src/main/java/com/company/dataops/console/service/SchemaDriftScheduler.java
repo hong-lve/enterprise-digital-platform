@@ -1,6 +1,7 @@
 package com.company.dataops.console.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.dataops.console.entity.CdcSourceEntity;
 import com.company.dataops.console.entity.FlinkSqlJobEntity;
 import com.company.dataops.console.entity.FlinkStreamJobEntity;
@@ -11,6 +12,7 @@ import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.mapper.SchemaSnapshotMapper;
 import com.company.dataops.console.service.kafka.AvroSchemaDiffService;
 import com.company.dataops.console.service.kafka.SchemaRegistryClient;
+import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -50,6 +52,7 @@ public class SchemaDriftScheduler {
     private final SchemaRegistryClient schemaRegistryClient;
     private final AvroSchemaDiffService avroSchemaDiffService;
     private final RealtimeAlertService realtimeAlertService;
+    private final FlinkStreamSubmissionClient flinkStreamSubmissionClient;
     private final String frontendUrl;
 
     public SchemaDriftScheduler(
@@ -60,6 +63,7 @@ public class SchemaDriftScheduler {
         SchemaRegistryClient schemaRegistryClient,
         AvroSchemaDiffService avroSchemaDiffService,
         RealtimeAlertService realtimeAlertService,
+        FlinkStreamSubmissionClient flinkStreamSubmissionClient,
         @Value("${platform.web.frontend-url}") String frontendUrl
     ) {
         this.cdcSourceMapper = cdcSourceMapper;
@@ -69,6 +73,7 @@ public class SchemaDriftScheduler {
         this.schemaRegistryClient = schemaRegistryClient;
         this.avroSchemaDiffService = avroSchemaDiffService;
         this.realtimeAlertService = realtimeAlertService;
+        this.flinkStreamSubmissionClient = flinkStreamSubmissionClient;
         this.frontendUrl = frontendUrl;
     }
 
@@ -128,6 +133,7 @@ public class SchemaDriftScheduler {
         }
         AvroSchemaDiffService.FieldDiff diff = avroSchemaDiffService.diff(oldSchema, newSchema);
         String detail = describeDiff(diff, compatibility.detail());
+        blockAffectedJobs(topic, detail);
         Set<String> owners = downstreamOwners(source, topic);
         realtimeAlertService.notifyMultiple(
             new ArrayList<>(owners),
@@ -136,6 +142,51 @@ public class SchemaDriftScheduler {
             "SCHEMA_DRIFT",
             frontendUrl + "/realtime/cdc-sources"
         );
+    }
+
+    private void blockAffectedJobs(String topic, String detail) {
+        for (FlinkStreamJobEntity job : flinkStreamJobMapper.selectList(null)) {
+            if (!consumesTopic(job.getKafkaTopics(), topic)) {
+                continue;
+            }
+            String savepointPath = job.getSavepointPath();
+            String status = job.getStatus();
+            if ("RUNNING".equals(status) && job.getFlinkJobId() != null) {
+                try {
+                    savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
+                    status = "CANCELED";
+                } catch (Exception exception) {
+                    LOGGER.error("Failed to stop schema-blocked stream job {}: {}", job.getId(), exception.getMessage());
+                }
+            }
+            flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
+                .eq(FlinkStreamJobEntity::getId, job.getId())
+                .set(FlinkStreamJobEntity::getSchemaBlocked, true)
+                .set(FlinkStreamJobEntity::getSchemaBlockReason, detail)
+                .set(FlinkStreamJobEntity::getStatus, status)
+                .set(FlinkStreamJobEntity::getSavepointPath, savepointPath));
+        }
+        for (FlinkSqlJobEntity job : flinkSqlJobMapper.selectList(null)) {
+            if (!consumesTopic(job.getKafkaTopics(), topic)) {
+                continue;
+            }
+            String savepointPath = job.getSavepointPath();
+            String status = job.getStatus();
+            if ("RUNNING".equals(status) && job.getFlinkJobId() != null) {
+                try {
+                    savepointPath = flinkStreamSubmissionClient.stopWithSavepoint(job.getFlinkJobId());
+                    status = "CANCELED";
+                } catch (Exception exception) {
+                    LOGGER.error("Failed to stop schema-blocked SQL job {}: {}", job.getId(), exception.getMessage());
+                }
+            }
+            flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
+                .eq(FlinkSqlJobEntity::getId, job.getId())
+                .set(FlinkSqlJobEntity::getSchemaBlocked, true)
+                .set(FlinkSqlJobEntity::getSchemaBlockReason, detail)
+                .set(FlinkSqlJobEntity::getStatus, status)
+                .set(FlinkSqlJobEntity::getSavepointPath, savepointPath));
+        }
     }
 
     private String describeDiff(AvroSchemaDiffService.FieldDiff diff, String compatibilityDetail) {

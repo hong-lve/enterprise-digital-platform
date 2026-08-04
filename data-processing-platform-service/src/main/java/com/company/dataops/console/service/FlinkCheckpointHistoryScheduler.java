@@ -9,6 +9,9 @@ import com.company.dataops.console.mapper.FlinkStreamJobMapper;
 import com.company.dataops.console.service.flink.FlinkStreamSubmissionClient;
 import java.util.Comparator;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -29,6 +32,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class FlinkCheckpointHistoryScheduler {
+    private static final Logger LOGGER = LoggerFactory.getLogger(FlinkCheckpointHistoryScheduler.class);
     private final FlinkStreamJobMapper flinkStreamJobMapper;
     private final FlinkCheckpointHistoryMapper flinkCheckpointHistoryMapper;
     private final FlinkStreamSubmissionClient flinkStreamSubmissionClient;
@@ -55,7 +59,11 @@ public class FlinkCheckpointHistoryScheduler {
             .eq(FlinkStreamJobEntity::getStatus, "RUNNING")
             .isNotNull(FlinkStreamJobEntity::getFlinkJobId));
         for (FlinkStreamJobEntity job : runningJobs) {
-            syncHistory(job);
+            try {
+                syncHistory(job);
+            } catch (Exception exception) {
+                LOGGER.warn("Checkpoint history sync failed for job {} ({}): {}", job.getId(), job.getName(), exception.getMessage());
+            }
         }
     }
 
@@ -82,7 +90,18 @@ public class FlinkCheckpointHistoryScheduler {
             entity.setCheckpointId(record.checkpointId());
             applyRecord(entity, record);
             entity.setDisposed(false);
-            flinkCheckpointHistoryMapper.insert(entity);
+            try {
+                flinkCheckpointHistoryMapper.insert(entity);
+            } catch (DuplicateKeyException ignored) {
+                FlinkCheckpointHistoryEntity concurrent = flinkCheckpointHistoryMapper.selectOne(new LambdaQueryWrapper<FlinkCheckpointHistoryEntity>()
+                    .eq(FlinkCheckpointHistoryEntity::getJobId, job.getId())
+                    .eq(FlinkCheckpointHistoryEntity::getFlinkJobId, job.getFlinkJobId())
+                    .eq(FlinkCheckpointHistoryEntity::getCheckpointId, record.checkpointId()));
+                if (concurrent != null) {
+                    applyRecord(concurrent, record);
+                    flinkCheckpointHistoryMapper.updateById(concurrent);
+                }
+            }
             return;
         }
         // A checkpoint's own status can still transition (IN_PROGRESS ->
@@ -112,7 +131,13 @@ public class FlinkCheckpointHistoryScheduler {
         if (latest == null) {
             return;
         }
-        boolean failing = "FAILED".equals(latest.status());
+        int tolerated = job.getTolerableFailedCheckpoints() == null ? 0 : job.getTolerableFailedCheckpoints();
+        long consecutiveFailures = records.stream()
+            .filter(record -> record.triggerTimestamp() != null)
+            .sorted(Comparator.comparingLong(FlinkStreamSubmissionClient.CheckpointRecord::triggerTimestamp).reversed())
+            .takeWhile(record -> "FAILED".equals(record.status()))
+            .count();
+        boolean failing = consecutiveFailures > tolerated;
         if (failing && !"ALERTING".equals(job.getCheckpointFailureAlertState())) {
             realtimeAlertService.notifyFailure(
                 new RealtimeAlertService.AlertSubject("FLINK_JOB", job.getId(), job.getName(), "CHECKPOINT_FAILURE"),
@@ -122,7 +147,7 @@ public class FlinkCheckpointHistoryScheduler {
                 frontendUrl + "/realtime/flink-jobs"
             );
             updateAlertState(job, "ALERTING");
-        } else if (!failing && "ALERTING".equals(job.getCheckpointFailureAlertState())) {
+        } else if ("COMPLETED".equals(latest.status()) && "ALERTING".equals(job.getCheckpointFailureAlertState())) {
             realtimeAlertService.notifyRecovery(
                 new RealtimeAlertService.AlertSubject("FLINK_JOB", job.getId(), job.getName(), "CHECKPOINT_FAILURE"),
                 job.getOwner(),

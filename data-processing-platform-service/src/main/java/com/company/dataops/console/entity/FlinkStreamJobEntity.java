@@ -41,6 +41,10 @@ public class FlinkStreamJobEntity {
     private String flinkJobId;
     private String savepointPath;
     private String status;
+    private String deploymentStatus;
+    private String deploymentMessage;
+    private Boolean schemaBlocked;
+    private String schemaBlockReason;
     private String lastError;
     private String alertState;
     private Double backpressureRatio;

@@ -17,6 +17,8 @@ import net.sf.jsqlparser.statement.select.FromItem;
 import net.sf.jsqlparser.statement.select.Join;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.SelectItem;
+import net.sf.jsqlparser.statement.select.Select;
+import net.sf.jsqlparser.statement.select.SetOperationList;
 import org.springframework.stereotype.Component;
 
 /**
@@ -54,7 +56,7 @@ public class FlinkSqlLineageParser {
         List<String> statements = FlinkSqlGatewayClient.splitStatements(sqlScript);
         Map<String, TableLineage> tables = new LinkedHashMap<>();
         List<String> warnings = new ArrayList<>();
-        String insertStatement = null;
+        List<String> insertStatements = new ArrayList<>();
 
         for (String raw : statements) {
             String statement = raw.trim();
@@ -66,32 +68,51 @@ public class FlinkSqlLineageParser {
                     warnings.add("无法解析建表语句（" + firstLine(statement) + "）：" + exception.getMessage());
                 }
             } else if (statement.regionMatches(true, 0, "INSERT INTO", 0, "INSERT INTO".length())) {
-                insertStatement = statement;
+                insertStatements.add(statement);
             }
         }
 
-        if (insertStatement == null) {
+        if (insertStatements.isEmpty()) {
             warnings.add("未找到 INSERT INTO 语句，无法生成字段级血缘");
-            return new SqlLineageResult(new ArrayList<>(tables.values()), null, List.of(), warnings);
+            return new SqlLineageResult(new ArrayList<>(tables.values()), null, List.of(), List.of(), warnings);
         }
-        try {
-            return parseInsertSelect(insertStatement, tables, warnings);
-        } catch (Exception exception) {
-            warnings.add("无法解析 INSERT 语句的字段级血缘：" + exception.getMessage());
-            return new SqlLineageResult(new ArrayList<>(tables.values()), null, List.of(), warnings);
+        List<InsertLineage> inserts = new ArrayList<>();
+        for (String insertStatement : insertStatements) {
+            try {
+                inserts.add(parseInsertSelect(insertStatement, tables, warnings));
+            } catch (Exception exception) {
+                warnings.add("无法解析 INSERT 语句的字段级血缘：" + exception.getMessage());
+            }
         }
+        String target = inserts.size() == 1 ? inserts.get(0).targetTable() : null;
+        List<ColumnLineage> columns = inserts.stream().flatMap(insert -> insert.columnLineages().stream()).toList();
+        return new SqlLineageResult(new ArrayList<>(tables.values()), target, columns, inserts, warnings);
     }
 
-    private SqlLineageResult parseInsertSelect(String sql, Map<String, TableLineage> tables, List<String> warnings) throws Exception {
+    private InsertLineage parseInsertSelect(String sql, Map<String, TableLineage> tables, List<String> warnings) throws Exception {
         Statement parsed = CCJSqlParserUtil.parse(sql);
         if (!(parsed instanceof Insert insert)) {
             throw new IllegalArgumentException("不是合法的 INSERT 语句");
         }
         String targetTable = insert.getTable().getName();
-        if (!(insert.getSelect().getSelectBody() instanceof PlainSelect plainSelect)) {
-            throw new IllegalArgumentException("暂不支持 UNION/复杂子查询的血缘解析");
+        if (insert.getSelect().getSelectBody() instanceof PlainSelect plainSelect) {
+            return new InsertLineage(targetTable, parsePlainSelect(insert, targetTable, plainSelect, tables, warnings));
         }
+        if (insert.getSelect().getSelectBody() instanceof SetOperationList setOperation) {
+            List<ColumnLineage> merged = new ArrayList<>();
+            for (Select branch : setOperation.getSelects()) {
+                if (!(branch instanceof PlainSelect plainBranch)) {
+                    throw new IllegalArgumentException("UNION 中包含暂不支持的复杂子查询");
+                }
+                mergeColumns(merged, parsePlainSelect(insert, targetTable, plainBranch, tables, warnings));
+            }
+            return new InsertLineage(targetTable, merged);
+        }
+        throw new IllegalArgumentException("暂不支持该复杂子查询的血缘解析");
+    }
 
+    private List<ColumnLineage> parsePlainSelect(Insert insert, String targetTable, PlainSelect plainSelect,
+                                                  Map<String, TableLineage> tables, List<String> warnings) {
         Map<String, String> aliasToTable = new LinkedHashMap<>();
         registerFromItem(plainSelect.getFromItem(), aliasToTable);
         if (plainSelect.getJoins() != null) {
@@ -126,7 +147,22 @@ public class FlinkSqlLineageParser {
                 : "col" + (i + 1);
             lineages.add(new ColumnLineage(unquote(targetColumn), sourceRefs, item.getExpression().toString()));
         }
-        return new SqlLineageResult(new ArrayList<>(tables.values()), targetTable, lineages, warnings);
+        return lineages;
+    }
+
+    private void mergeColumns(List<ColumnLineage> merged, List<ColumnLineage> branch) {
+        for (int i = 0; i < branch.size(); i++) {
+            ColumnLineage candidate = branch.get(i);
+            if (i >= merged.size()) {
+                merged.add(candidate);
+                continue;
+            }
+            ColumnLineage current = merged.get(i);
+            List<SourceColumnRef> sources = new ArrayList<>(current.sourceColumns());
+            candidate.sourceColumns().stream().filter(source -> !sources.contains(source)).forEach(sources::add);
+            merged.set(i, new ColumnLineage(current.targetColumn(), sources,
+                current.expression() + " UNION " + candidate.expression()));
+        }
     }
 
     private void registerFromItem(FromItem fromItem, Map<String, String> aliasToTable) {
@@ -240,6 +276,10 @@ public class FlinkSqlLineageParser {
     public record TableLineage(String tableName, String connectorType, String physicalLocation, List<String> columns) {
     }
 
-    public record SqlLineageResult(List<TableLineage> tables, String targetTable, List<ColumnLineage> columnLineages, List<String> warnings) {
+    public record InsertLineage(String targetTable, List<ColumnLineage> columnLineages) {
+    }
+
+    public record SqlLineageResult(List<TableLineage> tables, String targetTable, List<ColumnLineage> columnLineages,
+                                   List<InsertLineage> inserts, List<String> warnings) {
     }
 }

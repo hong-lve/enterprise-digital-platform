@@ -7,6 +7,8 @@ import com.company.dataops.console.mapper.RecoveryEventMapper;
 import com.company.dataops.console.mapper.RecoveryStateMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 /**
@@ -36,6 +38,7 @@ public class RecoveryOrchestrator {
 
     private final RecoveryStateMapper recoveryStateMapper;
     private final RecoveryEventMapper recoveryEventMapper;
+    private final String instanceId = UUID.randomUUID().toString();
 
     public RecoveryOrchestrator(RecoveryStateMapper recoveryStateMapper, RecoveryEventMapper recoveryEventMapper) {
         this.recoveryStateMapper = recoveryStateMapper;
@@ -47,17 +50,29 @@ public class RecoveryOrchestrator {
         logEvent(entityType, entityId, entityName, "FAILURE_DETECTED", detail);
     }
 
-    /** Whether it's worth attempting an automatic recovery action right now. */
-    public boolean shouldAttempt(String entityType, Long entityId) {
+    /** Atomically consumes one retry attempt and leases the recovery action to this application instance. */
+    public boolean tryAcquire(String entityType, Long entityId, String entityName) {
         RecoveryStateEntity state = loadOrCreate(entityType, entityId);
         if ("TRIPPED".equals(state.getCircuitState())) {
             return false;
         }
-        Tier tier = TIERS[state.getTier() - 1];
-        if (state.getAttemptsInTier() >= tier.maxAttempts()) {
+        if (state.getLeaseUntil() != null && state.getLeaseUntil().isAfter(LocalDateTime.now())) {
+            return false;
+        }
+        Tier tier = state.getAttemptsInTier() >= TIERS[state.getTier() - 1].maxAttempts() && state.getTier() < TIERS.length
+            ? TIERS[state.getTier()]
+            : TIERS[state.getTier() - 1];
+        if (state.getLastAttemptAt() != null && LocalDateTime.now().isBefore(state.getLastAttemptAt().plusSeconds(tier.delaySeconds()))) {
+            return false;
+        }
+        if (recoveryStateMapper.acquireLease(state.getId(), instanceId, 90) != 1) {
+            return false;
+        }
+        if (state.getAttemptsInTier() >= TIERS[state.getTier() - 1].maxAttempts()) {
             if (state.getTier() >= TIERS.length) {
                 state.setCircuitState("TRIPPED");
                 recoveryStateMapper.updateById(state);
+                recoveryStateMapper.releaseLease(state.getId(), instanceId);
                 logEvent(entityType, entityId, null, "CIRCUIT_TRIPPED", "已达到最高级别重试仍未恢复，自动恢复已停止，需要人工介入");
                 return false;
             }
@@ -65,26 +80,24 @@ public class RecoveryOrchestrator {
             state.setAttemptsInTier(0);
             recoveryStateMapper.updateById(state);
             logEvent(entityType, entityId, null, "TIER_ESCALATED", "升级到第 " + state.getTier() + " 级重试策略");
-            tier = TIERS[state.getTier() - 1];
         }
-        return state.getLastAttemptAt() == null || !LocalDateTime.now().isBefore(state.getLastAttemptAt().plusSeconds(tier.delaySeconds()));
+        recoveryStateMapper.recordAttempt(state.getId(), instanceId);
+        logEvent(entityType, entityId, entityName, "RETRY_ATTEMPTED", "第 " + state.getTier() + " 级重试，第 " + (state.getAttemptsInTier() + 1) + " 次尝试");
+        return true;
     }
 
-    /** Call right before actually issuing the recovery action (restart connector / resubmit job). */
-    public void recordAttempt(String entityType, Long entityId, String entityName) {
-        RecoveryStateEntity state = loadOrCreate(entityType, entityId);
-        state.setAttemptsInTier(state.getAttemptsInTier() + 1);
-        state.setLastAttemptAt(LocalDateTime.now());
-        recoveryStateMapper.updateById(state);
-        logEvent(entityType, entityId, entityName, "RETRY_ATTEMPTED", "第 " + state.getTier() + " 级重试，第 " + state.getAttemptsInTier() + " 次尝试");
+    public void releaseLease(String entityType, Long entityId) {
+        RecoveryStateEntity state = find(entityType, entityId);
+        if (state != null) {
+            recoveryStateMapper.releaseLease(state.getId(), instanceId);
+        }
     }
 
     /** Call once the entity is confirmed healthy again (self-healed, or a recovery attempt worked). */
     public void recordRecovered(String entityType, Long entityId, String entityName) {
         RecoveryStateEntity state = loadOrCreate(entityType, entityId);
         boolean wasDegraded = !"OK".equals(state.getCircuitState()) || state.getTier() > 1 || state.getAttemptsInTier() > 0;
-        resetState(state);
-        recoveryStateMapper.updateById(state);
+        recoveryStateMapper.resetState(state.getId());
         if (wasDegraded) {
             logEvent(entityType, entityId, entityName, "RECOVERED", null);
         }
@@ -98,16 +111,14 @@ public class RecoveryOrchestrator {
      */
     public void reset(String entityType, Long entityId, String entityName, String reason) {
         RecoveryStateEntity state = loadOrCreate(entityType, entityId);
-        resetState(state);
-        recoveryStateMapper.updateById(state);
+        recoveryStateMapper.resetState(state.getId());
         logEvent(entityType, entityId, entityName, "RESET", reason);
     }
 
     /** Human explicitly takes over after a tripped circuit - re-enables automatic recovery. */
     public void manualTakeover(String entityType, Long entityId, String entityName, String operator) {
         RecoveryStateEntity state = loadOrCreate(entityType, entityId);
-        resetState(state);
-        recoveryStateMapper.updateById(state);
+        recoveryStateMapper.resetState(state.getId());
         logEvent(entityType, entityId, entityName, "MANUAL_TAKEOVER", operator + " 手动重置了恢复状态");
     }
 
@@ -122,17 +133,8 @@ public class RecoveryOrchestrator {
             .orderByDesc(RecoveryEventEntity::getOccurredAt));
     }
 
-    private void resetState(RecoveryStateEntity state) {
-        state.setTier(1);
-        state.setAttemptsInTier(0);
-        state.setCircuitState("OK");
-        state.setLastAttemptAt(null);
-    }
-
     private RecoveryStateEntity loadOrCreate(String entityType, Long entityId) {
-        RecoveryStateEntity state = recoveryStateMapper.selectOne(new LambdaQueryWrapper<RecoveryStateEntity>()
-            .eq(RecoveryStateEntity::getEntityType, entityType)
-            .eq(RecoveryStateEntity::getEntityId, entityId));
+        RecoveryStateEntity state = find(entityType, entityId);
         if (state != null) {
             return state;
         }
@@ -142,8 +144,18 @@ public class RecoveryOrchestrator {
         fresh.setTier(1);
         fresh.setAttemptsInTier(0);
         fresh.setCircuitState("OK");
-        recoveryStateMapper.insert(fresh);
-        return fresh;
+        try {
+            recoveryStateMapper.insert(fresh);
+            return fresh;
+        } catch (DuplicateKeyException ignored) {
+            return find(entityType, entityId);
+        }
+    }
+
+    private RecoveryStateEntity find(String entityType, Long entityId) {
+        return recoveryStateMapper.selectOne(new LambdaQueryWrapper<RecoveryStateEntity>()
+            .eq(RecoveryStateEntity::getEntityType, entityType)
+            .eq(RecoveryStateEntity::getEntityId, entityId));
     }
 
     private void logEvent(String entityType, Long entityId, String entityName, String eventType, String detail) {

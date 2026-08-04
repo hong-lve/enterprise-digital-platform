@@ -17,6 +17,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -200,11 +201,11 @@ public class DataQualityRuleService {
         rule.setLastError(null);
 
         if (violationRows != null) {
-            // Cleared and rewritten fresh each run - only the latest run's
-            // offending values matter, an ever-growing history isn't useful
-            // for "go inspect what's wrong right now".
-            dataQualityViolationMapper.delete(new LambdaQueryWrapper<DataQualityViolationEntity>().eq(DataQualityViolationEntity::getRuleId, rule.getId()));
-            violationRows.forEach(dataQualityViolationMapper::insert);
+            String runId = UUID.randomUUID().toString();
+            violationRows.forEach(row -> {
+                row.setRunId(runId);
+                dataQualityViolationMapper.insert(row);
+            });
         }
 
         RealtimeAlertService.AlertSubject subject = new RealtimeAlertService.AlertSubject("DATA_QUALITY_RULE", rule.getId(), rule.getName(), rule.getRuleType());
