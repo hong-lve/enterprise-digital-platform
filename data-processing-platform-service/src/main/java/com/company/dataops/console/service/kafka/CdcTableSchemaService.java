@@ -37,12 +37,27 @@ public class CdcTableSchemaService {
     // schema from this registry at runtime (see CdcMirrorSupport's own copy
     // of this same client-side resolution for the JAR-job path).
     private final String schemaRegistryUrl;
+    // kafka:9092 is SSL-only (see docker-compose.remote.yml's x-kafka-common-
+    // env) - without these, a generated Kafka source table's AdminClient
+    // tries a plaintext handshake against an SSL-only port and every job
+    // fails at startup with "Failed to get metadata for topics" /
+    // "TimeoutException: The AdminClient thread has exited" (confirmed live:
+    // every "SQL 流作业" job crash-looped with exactly this error until this
+    // was added). CdcMirrorSupport (the JAR-job path) already sets the
+    // equivalent KafkaSource properties directly in Java; this is the same
+    // fix for the declarative 'connector'='kafka' WITH-clause path. The
+    // truststore path matches every flink-jobmanager/taskmanager/sql-gateway
+    // container's identical bind mount (./kafka-tls/certs/truststore.p12 ->
+    // /opt/flink/conf/kafka-truststore.p12).
+    private final String kafkaTlsPassword;
 
     public CdcTableSchemaService(
             @Value("${platform.bigdata.kafka-bootstrap-servers-internal:kafka:9092}") String kafkaBootstrapServers,
-            @Value("${platform.bigdata.schema-registry-url-internal}") String schemaRegistryUrl) {
+            @Value("${platform.bigdata.schema-registry-url-internal}") String schemaRegistryUrl,
+            @Value("${platform.bigdata.kafka-tls-password:}") String kafkaTlsPassword) {
         this.kafkaBootstrapServers = kafkaBootstrapServers;
         this.schemaRegistryUrl = schemaRegistryUrl;
+        this.kafkaTlsPassword = kafkaTlsPassword;
     }
 
     public List<String> listTables(CdcSourceEntity source) {
@@ -211,11 +226,12 @@ public class CdcTableSchemaService {
 
         StringBuilder ddl = new StringBuilder();
         ddl.append("CREATE TABLE ").append(srcName).append(" (\n");
-        ddl.append(columns.stream().map(this::columnDdlLine).collect(Collectors.joining(",\n")));
+        ddl.append(columns.stream().map(column -> columnDdlLine(column, primaryKeys)).collect(Collectors.joining(",\n")));
         ddl.append("\n) WITH (\n");
         ddl.append("  'connector' = 'kafka',\n");
         ddl.append("  'topic' = '").append(topic).append("',\n");
         ddl.append("  'properties.bootstrap.servers' = '").append(kafkaBootstrapServers).append("',\n");
+        appendKafkaSslProperties(ddl);
         ddl.append("  'scan.startup.mode' = 'earliest-offset',\n");
         ddl.append("  'format' = 'debezium-avro-confluent',\n");
         ddl.append("  'debezium-avro-confluent.schema-registry.url' = '").append(schemaRegistryUrl).append("'\n");
@@ -231,12 +247,13 @@ public class CdcTableSchemaService {
             // so it rides along as a trailing comment on the opening line
             // instead.
             ddl.append("\nCREATE TABLE ").append(sinkName).append(" ( -- 起点骨架，按需修改 sink topic 名字和 SELECT 里的字段/过滤逻辑\n");
-            ddl.append(columns.stream().map(this::columnDdlLine).collect(Collectors.joining(",\n")));
+            ddl.append(columns.stream().map(column -> columnDdlLine(column, primaryKeys)).collect(Collectors.joining(",\n")));
             ddl.append(",\n  PRIMARY KEY (").append(String.join(", ", primaryKeys)).append(") NOT ENFORCED\n");
             ddl.append(") WITH (\n");
             ddl.append("  'connector' = 'upsert-kafka',\n");
             ddl.append("  'topic' = '").append(tableName).append("-sink',\n");
             ddl.append("  'properties.bootstrap.servers' = '").append(kafkaBootstrapServers).append("',\n");
+            appendKafkaSslProperties(ddl);
             ddl.append("  'key.format' = 'json',\n");
             ddl.append("  'value.format' = 'json'\n");
             ddl.append(");\n\n");
@@ -253,8 +270,37 @@ public class CdcTableSchemaService {
         );
     }
 
-    private String columnDdlLine(ColumnInfo column) {
-        String flinkType = mapType(column);
+    private void appendKafkaSslProperties(StringBuilder ddl) {
+        if (kafkaTlsPassword == null || kafkaTlsPassword.isBlank()) {
+            return;
+        }
+        ddl.append("  'properties.security.protocol' = 'SSL',\n");
+        ddl.append("  'properties.ssl.truststore.location' = '/opt/flink/conf/kafka-truststore.p12',\n");
+        ddl.append("  'properties.ssl.truststore.type' = 'PKCS12',\n");
+        ddl.append("  'properties.ssl.truststore.password' = '").append(kafkaTlsPassword).append("',\n");
+    }
+
+    private String columnDdlLine(ColumnInfo column, List<String> primaryKeys) {
+        String flinkType = mapKafkaSourceType(column);
+        // Debezium's Oracle connector (unlike its MySQL connector) always
+        // encodes the primary-key field's Avro type as a plain non-union
+        // type in the "after"/"before" Value schema, even when every other
+        // field is wrapped ["null", ...] - confirmed live by pulling the
+        // actual registered schema from Schema Registry. Flink's
+        // debezium-avro-confluent format's reader schema is derived from
+        // this column's declared Flink type: leaving it nullable (Flink SQL's
+        // default) makes Flink expect a union and fail with "Found ...Value,
+        // expecting union" the moment it hits a real Oracle-sourced record -
+        // confirmed live, every Oracle-sourced SQL 流作业 crash-looped with
+        // exactly that error until this was added. Declaring the PK column
+        // NOT NULL here isn't just a workaround - a primary key genuinely
+        // can never be null - and it makes Flink derive a matching
+        // non-union reader schema for that one field, which is what
+        // resolves the mismatch.
+        boolean isPrimaryKey = primaryKeys.contains(column.name());
+        if (isPrimaryKey) {
+            flinkType = flinkType + " NOT NULL";
+        }
         // A trailing "-- comment" on the field's own line would swallow the
         // separating comma that Collectors.joining(",\n") (or the explicit
         // ",\n  PRIMARY KEY" append in buildDdl()) puts right after it,
@@ -262,7 +308,11 @@ public class CdcTableSchemaService {
         // table with a primary key - so any explanatory note goes on its own
         // line above the field instead.
         String notePrefix;
-        if (flinkType.equals("STRING") && !isKnownStringType(column)) {
+        if (isDecimalHandledAsString(column)) {
+            notePrefix = "  -- 源库类型为 " + column.mysqlType().toUpperCase(Locale.ROOT) + "，Debezium 连接器配置了 decimal.handling.mode=string，"
+                + "该列在 Kafka 里被编码成十进制文本字符串而非标准 Avro decimal，这里必须按 STRING 声明（声明成 DECIMAL/INT/BIGINT 会被当作二进制 decimal 字节错误解析，读出乱码数值）；"
+                + "写入数值类型的 sink 列时需要在 SELECT 里 CAST(`" + column.name() + "` AS " + mapType(column) + ")\n";
+        } else if (mapKafkaSourceType(column).equals("STRING") && !isKnownStringType(column)) {
             notePrefix = "  -- 未识别的" + (column.oracle() ? "Oracle" : "MySQL") + "类型 " + column.mysqlType() + "，已按 STRING 处理，请手动确认\n";
         } else if (isDatetimeType(column)) {
             notePrefix = "  -- Debezium 把该字段编码成纪元毫秒整数，Flink debezium-avro-confluent 无法直接解析成 TIMESTAMP，"
@@ -298,8 +348,44 @@ public class CdcTableSchemaService {
         };
     }
 
+    /**
+     * The column's "true" type - DECIMAL/INT/BIGINT for a source
+     * DECIMAL/NUMBER column - used for the physical ClickHouse/Doris/MySQL/
+     * Oracle sink table's own CREATE TABLE (see SinkTableDdlBuilder) and as
+     * the CAST target in generated SELECTs. Do NOT use this for a
+     * Kafka-topic-backed table's CREATE TABLE (the CDC source table, or the
+     * upsert-kafka skeleton sink below) - see mapKafkaSourceType().
+     */
     public String mapType(ColumnInfo column) {
         return column.oracle() ? mapOracleType(column) : mapMysqlType(column);
+    }
+
+    /**
+     * The type to declare for a column in any Kafka-topic-backed Flink
+     * table (the CDC source table's 'connector'='kafka' WITH-clause, and the
+     * upsert-kafka skeleton sink both come from columnDdlLine() below).
+     * Every DECIMAL/NUMBER column source-side is forced to STRING here
+     * regardless of what mapType() says, because every CdcSourceEntity's
+     * Debezium connector is configured with decimal.handling.mode=string
+     * (see DebeziumConnectorConfigBuilder) - Kafka Connect then encodes the
+     * column as a plain Avro string carrying human-readable decimal text,
+     * not the standard Avro "bytes + decimal logical type" encoding. If the
+     * Flink column were declared DECIMAL/INT/BIGINT instead, Flink's
+     * debezium-avro-confluent format reads that reader schema and tries to
+     * decode the raw Avro string bytes as a binary fixed-point decimal,
+     * producing garbage values (confirmed live: 59.90 came out as
+     * 2285925972.96, 199.00 as 0) instead of a parse error.
+     */
+    public String mapKafkaSourceType(ColumnInfo column) {
+        return isDecimalHandledAsString(column) ? "STRING" : mapType(column);
+    }
+
+    private boolean isDecimalHandledAsString(ColumnInfo column) {
+        String type = column.mysqlType().toLowerCase(Locale.ROOT);
+        if (column.oracle()) {
+            return type.equals("number");
+        }
+        return type.equals("decimal") || type.equals("numeric");
     }
 
     private String mapMysqlType(ColumnInfo column) {

@@ -58,7 +58,7 @@ public class SinkTableDdlBuilder {
             .map(column -> "  " + cdcTableSchemaService.quoteIdentifier(column.name()) + " " + cdcTableSchemaService.mapType(column))
             .collect(Collectors.joining(",\n"));
         String selectColumns = schema.columns().stream()
-            .map(column -> cdcTableSchemaService.quoteIdentifier(column.name()))
+            .map(this::selectExpression)
             .collect(Collectors.joining(", "));
 
         StringBuilder ddl = new StringBuilder();
@@ -68,6 +68,28 @@ public class SinkTableDdlBuilder {
         ddl.append(") WITH (\n").append(withClause).append("\n);\n\n");
         ddl.append("INSERT INTO ").append(sinkName).append(" SELECT ").append(selectColumns).append(" FROM ").append(srcName).append(";\n");
         return ddl.toString();
+    }
+
+    /**
+     * The Kafka source table (see CdcTableSchemaService.mapKafkaSourceType())
+     * declares DECIMAL/NUMBER columns as STRING - Debezium's
+     * decimal.handling.mode=string encodes them as decimal text, not
+     * standard Avro decimal - but this sink's own CREATE TABLE above still
+     * declares them as the real numeric type via cdcTableSchemaService.mapType(),
+     * matching the physical ClickHouse/Doris/MySQL/Oracle column. Passing the
+     * raw STRING value straight into a numeric sink column would either fail
+     * to type-check or (for connectors that do accept it) write garbage, so
+     * any column where the two types disagree needs an explicit CAST back to
+     * the numeric type here.
+     */
+    private String selectExpression(CdcTableSchemaService.ColumnInfo column) {
+        String identifier = cdcTableSchemaService.quoteIdentifier(column.name());
+        String sourceType = cdcTableSchemaService.mapKafkaSourceType(column);
+        String targetType = cdcTableSchemaService.mapType(column);
+        if (sourceType.equals(targetType)) {
+            return identifier;
+        }
+        return "CAST(" + identifier + " AS " + targetType + ") AS " + identifier;
     }
 
     private String sinkSuffix(String type) {

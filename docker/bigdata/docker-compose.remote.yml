@@ -207,6 +207,18 @@ services:
                                       # streaming jobs (stop-with-savepoint, resume-from-savepoint)
       - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
+      - ./flink-lib/flink-sql-avro-confluent-registry-1.19.3.jar:/opt/flink/lib/flink-sql-avro-confluent-registry-1.19.3.jar:ro
+        # Official Apache Flink format factory (org.apache.flink:flink-sql-
+        # avro-confluent-registry), a prebuilt shaded jar bundling Confluent's
+        # Avro client - without this, 'format'='debezium-avro-confluent' (the
+        # format every CDC source table declares, see CdcTableSchemaService.
+        # buildDdl()) fails at SQL-plan time with "Could not find any factory
+        # for identifier 'debezium-avro-confluent'". This is separate from
+        # the JAR-based cdc-mirror-* jobs' own Avro decoding (CdcMirrorSupport
+        # uses the raw Confluent client directly, bundled into each shaded
+        # jar) - SQL 流作业 goes through Flink's Table API/SQL Gateway
+        # instead, which resolves formats via this connector-style factory
+        # discovery mechanism and never had this jar until now.
         # single-file mount, not the whole lib/ dir - a directory mount would
         # replace the image's own lib/ contents wholesale and break every
         # other bundled jar. Needed here (not just in flink-sql-gateway)
@@ -281,6 +293,18 @@ services:
       - flink-state:/opt/flink/state
       - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
+      - ./flink-lib/flink-sql-avro-confluent-registry-1.19.3.jar:/opt/flink/lib/flink-sql-avro-confluent-registry-1.19.3.jar:ro
+        # Official Apache Flink format factory (org.apache.flink:flink-sql-
+        # avro-confluent-registry), a prebuilt shaded jar bundling Confluent's
+        # Avro client - without this, 'format'='debezium-avro-confluent' (the
+        # format every CDC source table declares, see CdcTableSchemaService.
+        # buildDdl()) fails at SQL-plan time with "Could not find any factory
+        # for identifier 'debezium-avro-confluent'". This is separate from
+        # the JAR-based cdc-mirror-* jobs' own Avro decoding (CdcMirrorSupport
+        # uses the raw Confluent client directly, bundled into each shaded
+        # jar) - SQL 流作业 goes through Flink's Table API/SQL Gateway
+        # instead, which resolves formats via this connector-style factory
+        # discovery mechanism and never had this jar until now.
       - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
       - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
       - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
@@ -323,6 +347,18 @@ services:
     volumes:
       - ./kafka-tls/certs/truststore.p12:/opt/flink/conf/kafka-truststore.p12:ro
       - ./flink-lib/flink-sql-connector-kafka-3.3.0-1.19.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.19.jar:ro
+      - ./flink-lib/flink-sql-avro-confluent-registry-1.19.3.jar:/opt/flink/lib/flink-sql-avro-confluent-registry-1.19.3.jar:ro
+        # Official Apache Flink format factory (org.apache.flink:flink-sql-
+        # avro-confluent-registry), a prebuilt shaded jar bundling Confluent's
+        # Avro client - without this, 'format'='debezium-avro-confluent' (the
+        # format every CDC source table declares, see CdcTableSchemaService.
+        # buildDdl()) fails at SQL-plan time with "Could not find any factory
+        # for identifier 'debezium-avro-confluent'". This is separate from
+        # the JAR-based cdc-mirror-* jobs' own Avro decoding (CdcMirrorSupport
+        # uses the raw Confluent client directly, bundled into each shaded
+        # jar) - SQL 流作业 goes through Flink's Table API/SQL Gateway
+        # instead, which resolves formats via this connector-style factory
+        # discovery mechanism and never had this jar until now.
       - ./flink-lib/clickhouse-jdbc-dialect-0.1.0.jar:/opt/flink/lib/clickhouse-jdbc-dialect-0.1.0.jar:ro
         # SQL Gateway compiles/validates DDL on its own classpath before
         # handing the job off to the jobmanager - without this mount here
