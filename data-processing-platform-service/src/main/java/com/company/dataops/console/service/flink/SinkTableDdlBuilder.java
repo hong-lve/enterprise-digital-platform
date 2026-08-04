@@ -2,10 +2,16 @@ package com.company.dataops.console.service.flink;
 
 import com.company.dataops.console.entity.CdcSourceEntity;
 import com.company.dataops.console.entity.DataSourceEntity;
+import com.company.dataops.console.service.datasource.DataSourceConnectionService;
 import com.company.dataops.console.service.kafka.CdcTableSchemaService;
+import com.company.dataops.console.service.query.ColumnView;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -14,18 +20,24 @@ import org.springframework.web.server.ResponseStatusException;
 /**
  * Generates a ClickHouse/Doris/MySQL/Oracle sink CREATE TABLE + INSERT INTO block to
  * append after the Kafka source table the "建表向导" wizard already produces
- * (see CdcTableSchemaService.describeTable()) - the column list/types/primary
- * key come from the exact same MySQL introspection, so the sink's column
- * list can never drift from the source's. WITH-clause shapes below match the
- * ones hand-verified running end-to-end earlier this project (jobs
+ * (see CdcTableSchemaService.describeTable()) - the column set/types/primary
+ * key come from the exact same source introspection, so the sink's column
+ * list can never drift from the source's. Column *names*, though, are taken
+ * from the physical target table where it already exists (see
+ * resolveSinkColumnNames()), since those are what the sink connector writes
+ * with and their casing need not match the source's. WITH-clause shapes below
+ * match the ones hand-verified running end-to-end earlier this project (jobs
  * sql-job-demo-source-to-clickhouse/-to-doris) - not a new, untested format.
  */
 @Component
 public class SinkTableDdlBuilder {
     private final CdcTableSchemaService cdcTableSchemaService;
+    private final DataSourceConnectionService dataSourceConnectionService;
 
-    public SinkTableDdlBuilder(CdcTableSchemaService cdcTableSchemaService) {
+    public SinkTableDdlBuilder(CdcTableSchemaService cdcTableSchemaService,
+                               DataSourceConnectionService dataSourceConnectionService) {
         this.cdcTableSchemaService = cdcTableSchemaService;
+        this.dataSourceConnectionService = dataSourceConnectionService;
     }
 
     public String build(CdcSourceEntity cdcSource, DataSourceEntity cdcDataSource, String qualifiedTable, DataSourceEntity target, String targetTable) {
@@ -52,22 +64,79 @@ public class SinkTableDdlBuilder {
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持作为 sink 目标的数据源类型：" + target.getType());
         };
 
+        Function<String, String> sinkColumnName = resolveSinkColumnNames(target, targetTable, schema);
+
         String srcName = tableName + "_src";
         String sinkName = tableName + "_" + sinkSuffix(type);
         String columnLines = schema.columns().stream()
-            .map(column -> "  " + cdcTableSchemaService.quoteIdentifier(column.name()) + " " + cdcTableSchemaService.mapType(column))
+            .map(column -> "  " + cdcTableSchemaService.quoteIdentifier(sinkColumnName.apply(column.name()))
+                + " " + cdcTableSchemaService.mapType(column))
             .collect(Collectors.joining(",\n"));
         String selectColumns = schema.columns().stream()
             .map(this::selectExpression)
+            .collect(Collectors.joining(", "));
+        String primaryKeyColumns = schema.primaryKeys().stream()
+            .map(sinkColumnName)
             .collect(Collectors.joining(", "));
 
         StringBuilder ddl = new StringBuilder();
         ddl.append("\nCREATE TABLE ").append(sinkName).append(" (\n");
         ddl.append(columnLines).append(",\n");
-        ddl.append("  PRIMARY KEY (").append(String.join(", ", schema.primaryKeys())).append(") NOT ENFORCED\n");
+        ddl.append("  PRIMARY KEY (").append(primaryKeyColumns).append(") NOT ENFORCED\n");
         ddl.append(") WITH (\n").append(withClause).append("\n);\n\n");
         ddl.append("INSERT INTO ").append(sinkName).append(" SELECT ").append(selectColumns).append(" FROM ").append(srcName).append(";\n");
         return ddl.toString();
+    }
+
+    /**
+     * Maps a source column name to the name the physical sink table actually
+     * uses, so the generated sink table can be declared against a target whose
+     * identifier casing differs from the source's.
+     *
+     * Needed because a Flink JDBC sink sends the Flink table's column names
+     * verbatim as the DB column names, and Oracle reports its identifiers
+     * uppercase while a sink table is typically created lowercase - against
+     * ClickHouse, whose column names are case-sensitive, every insert then
+     * failed with "Writing records to JDBC failed" while the job still showed
+     * RUNNING. MySQL-sourced jobs never hit it only because MySQL's lowercase
+     * names happened to match.
+     *
+     * Falls back to the source names when the target table can't be inspected
+     * - Redis has no column metadata to read, and an empty column list means
+     * the table simply hasn't been created yet, which is a legitimate way to
+     * use this endpoint (generate the DDL first, create the table after).
+     * A target that does exist but is missing a column is a different story:
+     * that INSERT can only fail at runtime, so it's rejected here instead.
+     */
+    private Function<String, String> resolveSinkColumnNames(DataSourceEntity target, String targetTable,
+                                                            CdcTableSchemaService.TableSchema schema) {
+        List<ColumnView> targetColumns = readTargetColumns(target, targetTable);
+        if (targetColumns.isEmpty()) {
+            return Function.identity();
+        }
+        Map<String, String> byLowerName = new LinkedHashMap<>();
+        for (ColumnView column : targetColumns) {
+            byLowerName.put(column.name().toLowerCase(Locale.ROOT), column.name());
+        }
+        List<String> missing = new ArrayList<>();
+        for (CdcTableSchemaService.ColumnInfo column : schema.columns()) {
+            if (!byLowerName.containsKey(column.name().toLowerCase(Locale.ROOT))) {
+                missing.add(column.name());
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "目标表 " + targetTable + " 缺少源表的这些字段：" + String.join("、", missing)
+                    + "；请先补齐目标表结构，否则作业能提交但写入时必然失败");
+        }
+        return sourceName -> byLowerName.getOrDefault(sourceName.toLowerCase(Locale.ROOT), sourceName);
+    }
+
+    private List<ColumnView> readTargetColumns(DataSourceEntity target, String targetTable) {
+        if ("REDIS".equalsIgnoreCase(target.getType())) {
+            return List.of();
+        }
+        return dataSourceConnectionService.columns(target, target.getDatabaseName(), targetTable);
     }
 
     /**
