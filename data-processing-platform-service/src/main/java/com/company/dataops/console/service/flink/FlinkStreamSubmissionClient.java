@@ -479,6 +479,19 @@ public class FlinkStreamSubmissionClient {
                 .build();
             java.net.http.HttpResponse<Void> response = java.net.http.HttpClient.newHttpClient()
                 .send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
+            // 404/409 both mean "there is nothing running to cancel": 404 when
+            // the job id is gone from the cluster entirely, 409 when Flink still
+            // knows the job but it already reached a terminal state (FINISHED /
+            // CANCELED / FAILED). Cancelling is idempotent from the caller's
+            // point of view - the job is stopped either way - so treating these
+            // as failures is wrong and actively harmful: a job that ended on its
+            // own could never be stopped from the UI again. Every 停止 click
+            // returned `强制取消失败：HTTP 409` and left the stored status at
+            // RUNNING, so the row stayed "运行中" forever. Confirmed live against
+            // a cdc-mirror job that had already gone FINISHED on the cluster.
+            if (response.statusCode() == 404 || response.statusCode() == 409) {
+                return;
+            }
             if (response.statusCode() >= 300) {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "强制取消失败：HTTP " + response.statusCode());
             }
