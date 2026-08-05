@@ -157,11 +157,21 @@ public class DataReconciliationService {
      */
     private Map<String, Double> queryMetric(DataSourceEntity dataSource, String database, String tableOrPattern,
                                              String aggregateColumn, String partitionColumn, boolean isAggregate) {
-        String table = SqlIdentifierValidator.requireValidTableName(tableOrPattern);
+        // ClickHouse's ReplacingMergeTree keeps every version of a row until a
+        // background merge collapses them, so a bare COUNT(*) counts rows that
+        // logically no longer exist. Against a CDC sink - where every update to
+        // the same key writes another version - that made a perfectly healthy
+        // table read high forever and reconciliation report permanent DRIFT
+        // (measured: a 4-row source against a 7-row count of the same 4 keys).
+        // FINAL forces read-time deduplication, which is the whole point of a
+        // correctness check; it costs more than a raw count, but this runs on a
+        // schedule over demo-sized tables, not in a hot path.
+        String table = SqlIdentifierValidator.requireValidTableName(tableOrPattern)
+            + ("CLICKHOUSE".equalsIgnoreCase(dataSource.getType()) ? " FINAL" : "");
         String selectExpr = isAggregate ? "SUM(" + SqlIdentifierValidator.requireValidColumnName(aggregateColumn, "聚合字段") + ")" : "COUNT(*)";
         if (partitionColumn == null || partitionColumn.isBlank()) {
             QueryResult result = dataSourceConnectionService.query(dataSource, database, "SELECT " + selectExpr + " AS metric FROM " + table, 1);
-            return Map.of(SINGLE_VALUE_KEY, result.rows().isEmpty() ? 0.0 : toDouble(result.rows().get(0).get("metric")));
+            return Map.of(SINGLE_VALUE_KEY, result.rows().isEmpty() ? 0.0 : toDouble(valueOf(result.rows().get(0), "metric")));
         }
         String partition = SqlIdentifierValidator.requireValidColumnName(partitionColumn, "分区字段");
         // Capped at 1000 distinct partition values - a partition-level check
@@ -171,9 +181,36 @@ public class DataReconciliationService {
             "SELECT " + partition + " AS part_key, " + selectExpr + " AS metric FROM " + table + " GROUP BY " + partition, 1000);
         Map<String, Double> byPartition = new java.util.LinkedHashMap<>();
         for (Map<String, Object> row : result.rows()) {
-            byPartition.put(String.valueOf(row.get("part_key")), toDouble(row.get("metric")));
+            byPartition.put(String.valueOf(valueOf(row, "part_key")), toDouble(valueOf(row, "metric")));
         }
         return byPartition;
+    }
+
+    /**
+     * Reads a result column by name without assuming the case the driver
+     * reported it in. The aliases above are written lower-case, but Oracle
+     * folds unquoted identifiers to upper case and hands back {@code METRIC} /
+     * {@code PART_KEY} - so a plain {@code row.get("metric")} returned null for
+     * every Oracle-side query, {@link #toDouble} turned that null into 0.0, and
+     * the check silently reported the source as empty.
+     *
+     * <p>That was worse than an error: reconciliation exists to catch missing
+     * data, and counting a healthy source as 0 makes it report drift against a
+     * target that is actually correct - exactly backwards. Confirmed live: an
+     * Oracle source holding 3 rows was reported as 0 while the MySQL target it
+     * fed was counted correctly at 3.
+     */
+    private Object valueOf(Map<String, Object> row, String column) {
+        Object direct = row.get(column);
+        if (direct != null) {
+            return direct;
+        }
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(column)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     private String summarizePartitionDrift(Map<String, Double> sourceMetrics, Map<String, Double> targetMetrics, int tolerance) {
