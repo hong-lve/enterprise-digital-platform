@@ -31,6 +31,9 @@ import org.springframework.web.server.ResponseStatusException;
  */
 @Component
 public class SinkTableDdlBuilder {
+    /** Doris Stream Load rejects any label longer than this - see dorisWithClause(). */
+    private static final int DORIS_LABEL_MAX_LENGTH = 128;
+
     private final CdcTableSchemaService cdcTableSchemaService;
     private final DataSourceConnectionService dataSourceConnectionService;
 
@@ -193,7 +196,35 @@ public class SinkTableDdlBuilder {
         // - baking a random suffix in once at DDL-generation time (rather
         // than regenerating on every job start) has already been verified
         // safe to stop/restart repeatedly against the same Doris table.
-        String labelPrefix = targetTable + "-" + UUID.randomUUID().toString().substring(0, 8);
+        //
+        // The prefix has to leave room for what the Doris connector appends to
+        // it before handing the result to Stream Load, which enforces
+        // `^[-_A-Za-z0-9:]{1,128}$` on the FULL label. DorisWriter builds
+        // `{prefix}_{db}_{table}_{subtask}_{checkpoint}_{uuid}`, so the
+        // suffix alone costs db+table+~44 characters. Confirmed live: target
+        // table `test_orders_mysql_doris_sql_sink` in database
+        // `realtime_demo` produced a 129-character label and every checkpoint
+        // failed with `Label format error` - one character over the limit,
+        // with no invalid characters involved. The job still reported RUNNING
+        // because the Doris sink only commits on checkpoint, so the symptom
+        // was a permanently empty sink table rather than a failed job.
+        //
+        // Budget the prefix against the actual database/table names rather
+        // than a fixed guess, and keep the random suffix (uniqueness matters
+        // more than readability when the name has to be truncated).
+        //
+        // The measured suffix is db + table + 43 (5 separators + a 36-char
+        // UUID + a single-digit subtask and checkpoint id). Budget db + table
+        // + 64 instead: the subtask index grows with parallelism and the
+        // checkpoint id grows without bound, so a budget that only just fits
+        // checkpoint 1 would silently start failing hours into a long-running
+        // job. The extra 21 characters cover a 3-digit subtask and a 10-digit
+        // checkpoint id with room to spare.
+        String randomSuffix = "-" + UUID.randomUUID().toString().substring(0, 8);
+        int connectorSuffixBudget = target.getDatabaseName().length() + targetTable.length() + 64;
+        int room = Math.max(1, DORIS_LABEL_MAX_LENGTH - connectorSuffixBudget - randomSuffix.length());
+        String labelBase = targetTable.length() > room ? targetTable.substring(0, room) : targetTable;
+        String labelPrefix = labelBase + randomSuffix;
         return "  'connector' = 'doris',\n"
             + "  'fenodes' = '" + target.getFlinkHost() + ":" + target.getFlinkHttpPort() + "',\n"
             + "  'table.identifier' = '" + target.getDatabaseName() + "." + targetTable + "',\n"
