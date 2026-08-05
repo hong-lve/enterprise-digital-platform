@@ -267,7 +267,13 @@ public class FlinkStreamSubmissionClient {
             case "RUNNING", "RESTARTING", "CREATED", "RECONCILING" -> new FlinkJobStatus("RUNNING", "运行中：" + state);
             case "FAILED", "FAILING" -> new FlinkJobStatus("FAILED", "作业失败（" + state + "）");
             case "CANCELED", "CANCELLING" -> new FlinkJobStatus("CANCELED", "已停止");
-            case "FINISHED" -> new FlinkJobStatus("FINISHED", "作业已结束（流作业正常不会到这个状态，可能是数据源提前结束）");
+            // Flink reports FINISHED both for a graceful stop-with-savepoint and
+            // for a source that genuinely ran dry, and its REST API exposes no
+            // way to tell them apart. Only the platform knows which happened, so
+            // this message must not assert either - applyStopUnlocked() clears
+            // it outright when the stop was deliberate, and what is left here is
+            // the genuinely-unexplained case.
+            case "FINISHED" -> new FlinkJobStatus("FINISHED", "作业已结束。若不是手动停止的，检查数据源是否提前结束");
             default -> new FlinkJobStatus("RUNNING", "运行中：" + state);
         };
     }

@@ -265,6 +265,12 @@ public class FlinkSqlJobController {
         flinkSqlJobMapper.update(null, new LambdaUpdateWrapper<FlinkSqlJobEntity>()
             .eq(FlinkSqlJobEntity::getId, job.getId())
             .set(FlinkSqlJobEntity::getStatus, job.getStatus())
+            // Clear the poller's last message - see the identical comment in
+            // FlinkStreamJobController.applyStopUnlocked(): a graceful stop
+            // lands the Flink job in FINISHED, which status() labels with the
+            // "作业已结束（流作业正常不会到这个状态…）" warning, and that warning
+            // would otherwise stick to a job the user stopped on purpose.
+            .set(FlinkSqlJobEntity::getLastError, null)
             .set(FlinkSqlJobEntity::getSavepointPath, job.getSavepointPath()));
     }
 

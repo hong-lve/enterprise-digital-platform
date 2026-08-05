@@ -378,6 +378,20 @@ public class FlinkStreamJobController {
         flinkStreamJobMapper.update(null, new LambdaUpdateWrapper<FlinkStreamJobEntity>()
             .eq(FlinkStreamJobEntity::getId, job.getId())
             .set(FlinkStreamJobEntity::getStatus, job.getStatus())
+            // Clear whatever the poller last wrote here. A graceful
+            // stop-with-savepoint leaves the Flink-side job in FINISHED, and
+            // Flink's REST API cannot tell "stopped on purpose" apart from
+            // "the source ran out of data" - so status() maps FINISHED to the
+            // warning "作业已结束（流作业正常不会到这个状态…）". refreshStatus()
+            // already refuses to re-poll a job we've recorded as CANCELED, but
+            // that only stops the message being written *after* the stop; if
+            // the poller happened to observe FINISHED in the window before this
+            // method wrote CANCELED, the warning stayed on the row forever and
+            // a deliberately stopped job looked like it had crashed.
+            //
+            // This method is the one place that knows the stop was intentional,
+            // so it is the right place to say so.
+            .set(FlinkStreamJobEntity::getLastError, null)
             .set(FlinkStreamJobEntity::getSavepointPath, job.getSavepointPath()));
     }
 
