@@ -5,13 +5,13 @@
   <modelVersion>4.0.0</modelVersion>
 
   <!--
-    Shared Kafka+Debezium plumbing (CdcMirrorSupport) for the five
-    cdc-mirror-* sink modules (cdc-mirror-clickhouse/oracle/mysql/redis/
-    doris) - split out of what used to be one cdc-mirror-job module with
-    five main classes, so each sink ships as its own independently
-    deployable/upgradable jar instead of all five (and every sink's JDBC
+    Shared Kafka+Debezium plumbing (CdcMirrorSupport) for the four
+    cdc-mirror-* sink modules (cdc-mirror-clickhouse/oracle/mysql/doris)
+    - split out of what used to be one cdc-mirror-job module with
+    several main classes, so each sink ships as its own independently
+    deployable/upgradable jar instead of all of them (and every sink's JDBC
     driver) bundled together. A plain (unshaded) library jar, not an
-    executable - `mvn install`ed to the local repo so the five sink modules
+    executable - `mvn install`ed to the local repo so the four sink modules
     can depend on it by Maven coordinates like any other dependency.
   -->
 

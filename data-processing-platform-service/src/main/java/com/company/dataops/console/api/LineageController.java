@@ -33,8 +33,8 @@ import org.springframework.web.server.ResponseStatusException;
  *
  * SQL jobs (FlinkSqlJobEntity) show up as consumers the same way jar jobs
  * do, distinguished by jobType on FlinkJobLineage. A SQL job can declare
- * clickhouseSinkTables and/or dorisSinkTables and/or oracleSinkTables and/or
- * redisSinkTables (same optional/comma-separated/user-declared fields jar
+ * clickhouseSinkTables and/or dorisSinkTables and/or oracleSinkTables (same
+ * optional/comma-separated/user-declared fields jar
  * jobs have for ClickHouse - the platform doesn't parse the SQL script to infer either,
  * same reasoning as kafka_consumer_group_id); all get merged into one
  * sinkTables list since the lineage graph doesn't care which engine a table
@@ -175,7 +175,6 @@ public class LineageController {
         List<SinkTableLineage> sinkTables = new ArrayList<>(parseSinkTables(job.getClickhouseSinkTables(), "CLICKHOUSE"));
         sinkTables.addAll(parseSinkTables(job.getDorisSinkTables(), "DORIS"));
         sinkTables.addAll(parseSinkTables(job.getOracleSinkTables(), "ORACLE"));
-        sinkTables.addAll(parseSinkTables(job.getRedisSinkTables(), "REDIS"));
         return new FlinkJobLineage(job.getId(), job.getName(), job.getStatus(), "SQL", sinkTables);
     }
 
@@ -197,7 +196,7 @@ public class LineageController {
     public record FlinkJobLineage(Long id, String name, String status, String jobType, List<SinkTableLineage> sinkTables) {
     }
 
-    // sinkType: "CLICKHOUSE" | "DORIS" | "ORACLE" | "REDIS" - previously sinkTables was a flat
+    // sinkType: "CLICKHOUSE" | "DORIS" | "ORACLE" - previously sinkTables was a flat
     // List<String> merging both, which lost which engine each table
     // actually lives in and made the frontend mislabel every entry as
     // ClickHouse (a SQL job's Doris sink table rendered with a "ClickHouse

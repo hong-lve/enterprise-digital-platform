@@ -53,7 +53,6 @@ const TARGET_TYPE_OPTIONS: { value: JavaBuildTargetType; label: string }[] = [
   { value: 'CLICKHOUSE', label: 'ClickHouse' },
   { value: 'ORACLE', label: 'Oracle' },
   { value: 'MYSQL', label: 'MySQL' },
-  { value: 'REDIS', label: 'Redis' },
   { value: 'DORIS', label: 'Doris' },
   { value: 'ALL', label: '全部（需要用到多种驱动时选这个，jar 包会大一些）' }
 ];
@@ -114,7 +113,7 @@ export function JarPackagesPage() {
     setCompileError(null);
     setDebugOutput(null);
     compileForm.resetFields();
-    compileForm.setFieldsValue({ className: 'com.company.userjobs.MyCustomJob', targetType: 'REDIS' });
+    compileForm.setFieldsValue({ className: 'com.company.userjobs.MyCustomJob', targetType: 'CLICKHOUSE' });
     setCompileModalOpen(true);
   };
 
@@ -396,7 +395,7 @@ export function JarPackagesPage() {
               <Form.Item
                 name="programArgs"
                 label="程序参数（仅调试运行使用）"
-                extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口），跟 Flink 流作业里最终提交时要填的 Docker 网络地址不是一回事"
+                extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口），跟 Flink 流作业里最终提交时要填的 Docker 网络地址不是一回事"
               >
                 <Input placeholder="--kafka-bootstrap localhost:19092 --topic ..." />
               </Form.Item>
@@ -493,7 +492,7 @@ export function JarPackagesPage() {
               <Form.Item
                 name="programArgs"
                 label="程序参数（仅调试运行使用）"
-                extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka/Redis 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口）"
+                extra="调试运行是从这台服务器自己发起的连接，不是从 Docker 网络内部发起 - Kafka 等地址要填这台机器能访问到的（通常是 localhost + 对外映射端口）"
               >
                 <Input placeholder="--kafka-bootstrap localhost:19092 --topic ..." />
               </Form.Item>

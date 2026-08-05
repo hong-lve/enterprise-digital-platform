@@ -12,7 +12,7 @@ import org.apache.ibatis.type.MappedTypes;
  * Wired onto DataSourceEntity.password via @TableField(typeHandler = ...) -
  * every existing call site that reads dataSource.getPassword() to actually
  * connect (DataSourceConnectionService, DebeziumConnectorConfigBuilder,
- * RedisConnectionService, SinkTableDdlBuilder, CdcTableSchemaService) keeps
+ * SinkTableDdlBuilder, CdcTableSchemaService) keeps
  * working unchanged: the entity still holds plain text in memory, only what
  * MyBatis sends to/reads from the password column is ciphertext.
  */

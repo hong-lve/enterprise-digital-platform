@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <!--
-    One of five sibling modules - see cdc-mirror-clickhouse/pom.xml's
+    One of four sibling modules - see cdc-mirror-clickhouse/pom.xml's
     comment. Depends on the same mysql-connector-j as cdc-mirror-mysql
     (not a Doris-specific driver) - DorisMirrorJob talks to Doris over its
     MySQL-wire-protocol query port, see that class's own javadoc.

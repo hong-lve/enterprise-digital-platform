@@ -93,7 +93,7 @@ export function deleteFlinkJarVersion(id: number, versionId: number) {
  * ~20-26MB) when the job only needs one driver, or 'ALL' for the full
  * multi-driver buildkit jar (~38MB) when it genuinely needs more than one.
  */
-export type JavaBuildTargetType = 'CLICKHOUSE' | 'ORACLE' | 'MYSQL' | 'REDIS' | 'DORIS' | 'ALL';
+export type JavaBuildTargetType = 'CLICKHOUSE' | 'ORACLE' | 'MYSQL' | 'DORIS' | 'ALL';
 
 /**
  * "在线编写" - compiles a single Java source file server-side against a

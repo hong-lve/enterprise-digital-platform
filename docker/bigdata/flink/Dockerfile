@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# Bakes the 6 connector/driver jars that docker-compose.yml bind-mounts into
+# Bakes the 5 connector/driver jars that docker-compose.yml bind-mounts into
 # the jobmanager/taskmanager/sql-gateway containers today into a single
 # image - K8s has no equivalent of a host-path bind mount shared across
 # nodes, so these have to live inside the image instead.
@@ -15,4 +15,3 @@ COPY flink-lib/clickhouse-jdbc-dialect-0.1.0.jar /opt/flink/lib/
 COPY flink-lib/flink-doris-connector-1.19-1.6.2.jar /opt/flink/lib/
 COPY flink-lib/mysql-connector-j-8.3.0.jar /opt/flink/lib/
 COPY flink-lib/ojdbc11-23.9.0.25.07.jar /opt/flink/lib/
-COPY flink-lib/redis-table-sink-0.1.0.jar /opt/flink/lib/

@@ -60,7 +60,6 @@ public class SinkTableDdlBuilder {
             case "MYSQL" -> jdbcWithClause("jdbc:mysql", target, targetTable);
             case "ORACLE" -> oracleWithClause(target, targetTable);
             case "DORIS" -> dorisWithClause(target, targetTable);
-            case "REDIS" -> redisWithClause(target, targetTable);
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持作为 sink 目标的数据源类型：" + target.getType());
         };
 
@@ -101,16 +100,15 @@ public class SinkTableDdlBuilder {
      * RUNNING. MySQL-sourced jobs never hit it only because MySQL's lowercase
      * names happened to match.
      *
-     * Falls back to the source names when the target table can't be inspected
-     * - Redis has no column metadata to read, and an empty column list means
-     * the table simply hasn't been created yet, which is a legitimate way to
-     * use this endpoint (generate the DDL first, create the table after).
+     * Falls back to the source names when the target table returns no columns
+     * at all, which means it simply hasn't been created yet - a legitimate way
+     * to use this endpoint (generate the DDL first, create the table after).
      * A target that does exist but is missing a column is a different story:
      * that INSERT can only fail at runtime, so it's rejected here instead.
      */
     private Function<String, String> resolveSinkColumnNames(DataSourceEntity target, String targetTable,
                                                             CdcTableSchemaService.TableSchema schema) {
-        List<ColumnView> targetColumns = readTargetColumns(target, targetTable);
+        List<ColumnView> targetColumns = dataSourceConnectionService.columns(target, target.getDatabaseName(), targetTable);
         if (targetColumns.isEmpty()) {
             return Function.identity();
         }
@@ -130,13 +128,6 @@ public class SinkTableDdlBuilder {
                     + "；请先补齐目标表结构，否则作业能提交但写入时必然失败");
         }
         return sourceName -> byLowerName.getOrDefault(sourceName.toLowerCase(Locale.ROOT), sourceName);
-    }
-
-    private List<ColumnView> readTargetColumns(DataSourceEntity target, String targetTable) {
-        if ("REDIS".equalsIgnoreCase(target.getType())) {
-            return List.of();
-        }
-        return dataSourceConnectionService.columns(target, target.getDatabaseName(), targetTable);
     }
 
     /**
@@ -167,7 +158,6 @@ public class SinkTableDdlBuilder {
             case "DORIS" -> "doris_sink";
             case "MYSQL" -> "mysql_sink";
             case "ORACLE" -> "oracle_sink";
-            case "REDIS" -> "redis_sink";
             default -> "sink";
         };
     }
@@ -211,19 +201,6 @@ public class SinkTableDdlBuilder {
             + "  'password' = '" + secretReference(target) + "',\n"
             + "  'sink.label-prefix' = '" + labelPrefix + "',\n"
             + "  'sink.enable-delete' = 'true'";
-    }
-
-    private String redisWithClause(DataSourceEntity target, String targetTable) {
-        // Redis isn't JDBC-queryable, so this doesn't share jdbcWithClause()
-        // - see flink-connectors/redis-table-sink for the connector itself.
-        // key-prefix namespaces by target table so two sink tables writing
-        // into the same Redis instance don't collide on the same keys.
-        requireFlinkAddress(target, false);
-        return "  'connector' = 'redis',\n"
-            + "  'host' = '" + target.getFlinkHost() + "',\n"
-            + "  'port' = '" + target.getFlinkPort() + "',\n"
-            + "  'password' = '" + secretReference(target) + "',\n"
-            + "  'key-prefix' = '" + targetTable + ":'";
     }
 
     private void requireFlinkAddress(DataSourceEntity target, boolean needsHttpPort) {

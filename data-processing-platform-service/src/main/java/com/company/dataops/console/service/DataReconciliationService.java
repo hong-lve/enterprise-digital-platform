@@ -6,7 +6,6 @@ import com.company.dataops.console.entity.ReconciliationCheckEntity;
 import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.mapper.ReconciliationCheckMapper;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
-import com.company.dataops.console.service.datasource.RedisConnectionService;
 import com.company.dataops.console.service.datasource.SqlIdentifierValidator;
 import com.company.dataops.console.service.query.QueryResult;
 import java.time.LocalDateTime;
@@ -46,20 +45,17 @@ public class DataReconciliationService {
     private final ReconciliationCheckMapper reconciliationCheckMapper;
     private final DataSourceMapper dataSourceMapper;
     private final DataSourceConnectionService dataSourceConnectionService;
-    private final RedisConnectionService redisConnectionService;
     private final RealtimeAlertService alertService;
 
     public DataReconciliationService(
         ReconciliationCheckMapper reconciliationCheckMapper,
         DataSourceMapper dataSourceMapper,
         DataSourceConnectionService dataSourceConnectionService,
-        RedisConnectionService redisConnectionService,
         RealtimeAlertService alertService
     ) {
         this.reconciliationCheckMapper = reconciliationCheckMapper;
         this.dataSourceMapper = dataSourceMapper;
         this.dataSourceConnectionService = dataSourceConnectionService;
-        this.redisConnectionService = redisConnectionService;
         this.alertService = alertService;
     }
 
@@ -161,12 +157,6 @@ public class DataReconciliationService {
      */
     private Map<String, Double> queryMetric(DataSourceEntity dataSource, String database, String tableOrPattern,
                                              String aggregateColumn, String partitionColumn, boolean isAggregate) {
-        if ("REDIS".equalsIgnoreCase(dataSource.getType())) {
-            if (isAggregate || (partitionColumn != null && !partitionColumn.isBlank())) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Redis 目标不支持聚合值对账或分区级对账，只能用行数（Key 计数）对账");
-            }
-            return Map.of(SINGLE_VALUE_KEY, (double) redisConnectionService.countKeysMatching(dataSource, database, tableOrPattern));
-        }
         String table = SqlIdentifierValidator.requireValidTableName(tableOrPattern);
         String selectExpr = isAggregate ? "SUM(" + SqlIdentifierValidator.requireValidColumnName(aggregateColumn, "聚合字段") + ")" : "COUNT(*)";
         if (partitionColumn == null || partitionColumn.isBlank()) {

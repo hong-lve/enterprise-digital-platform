@@ -3,7 +3,7 @@ import type { ApiResponse } from './auth';
 
 export interface SinkTableLineage {
   table: string;
-  /** 'CLICKHOUSE' | 'DORIS' | 'ORACLE' | 'REDIS' - see LineageController.java. */
+  /** 'CLICKHOUSE' | 'DORIS' | 'ORACLE' - see LineageController.java. */
   sinkType: string;
 }
 

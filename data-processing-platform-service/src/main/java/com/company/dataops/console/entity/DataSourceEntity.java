@@ -10,17 +10,13 @@ import java.time.LocalDateTime;
 import lombok.Data;
 
 /**
- * A reusable connection to a MySQL/ClickHouse/Doris/Oracle/Redis instance,
+ * A reusable connection to a MySQL/ClickHouse/Doris/Oracle instance,
  * referenced by id from CdcSourceEntity, the SQL job sink wizard, and the
  * real-time query page - instead of each of those hand-storing/hand-typing
  * their own host/port/username/password. See V14__data_source.sql for why
  * this isn't an opaque jdbcUrl string like data-processing-platform-service's
  * sys_data_source: Debezium needs host/port/user/password split out, not a
- * URL to reparse. REDIS is the one type that isn't JDBC-queryable (see
- * RedisConnectionService) - it still fits this same shape because Redis's
- * AUTH command accepts a username too (ACL-style, "default" if only
- * requirepass is configured with no other ACL users), so username/password
- * aren't repurposed or left unused for it.
+ * URL to reparse.
  */
 @Data
 // autoResultMap = true is load-bearing, not decorative: MyBatis-Plus applies

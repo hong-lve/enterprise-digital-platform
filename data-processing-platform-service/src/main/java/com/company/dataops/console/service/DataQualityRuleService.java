@@ -81,9 +81,6 @@ public class DataQualityRuleService {
         if (dataSource == null) {
             return recordError(rule, "数据源不存在，可能已被删除");
         }
-        if ("REDIS".equalsIgnoreCase(dataSource.getType())) {
-            return recordError(rule, "数据质量规则不支持 Redis 数据源");
-        }
         try {
             switch (rule.getRuleType().toUpperCase(Locale.ROOT)) {
                 case "NULL_RATE" -> checkNullRate(rule, dataSource);

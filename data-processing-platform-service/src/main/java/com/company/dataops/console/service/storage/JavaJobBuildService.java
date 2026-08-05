@@ -42,9 +42,9 @@ import org.springframework.web.server.ResponseStatusException;
  * JarStorageService, just assembled here instead of uploaded as a file.
  * The base jar is selected per compile via targetType: one of the 5
  * existing single-driver cdc-mirror-* module jars (CLICKHOUSE/ORACLE/
- * MYSQL/REDIS/DORIS, ~20-26MB, that module's own demo job class excluded)
+ * MYSQL/DORIS, ~20-26MB, that module's own demo job class excluded)
  * when the user's code only needs one driver, or the full cdc-mirror-
- * buildkit jar (all five drivers merged, ~38MB) as the "ALL" fallback for
+ * buildkit jar (all four drivers merged, ~38MB) as the "ALL" fallback for
  * code that genuinely needs more than one.
  *
  * Deliberately NOT a general "run arbitrary Maven coordinates" build
@@ -55,7 +55,7 @@ import org.springframework.web.server.ResponseStatusException;
  * request time - a real supply-chain risk for a feature whose whole point
  * is "paste code into a web form" - so custom sink logic beyond what's
  * already bundled here still needs a real Maven module built and uploaded
- * by hand, same as the five cdc-mirror-* jars were.
+ * by hand, same as the four cdc-mirror-* jars were.
  *
  * Compiling untrusted-ish source in-process is safe in a way *running* it
  * wouldn't be: javac's compilation phase (with annotation processing off,
@@ -114,10 +114,10 @@ public class JavaJobBuildService {
     };
 
     /**
-     * One of the 5 pre-existing cdc-mirror-* module jars a "目标数据源类型"
+     * One of the 4 pre-existing cdc-mirror-* module jars a "目标数据源类型"
      * selection assembles into, instead of always the full buildkit jar.
      * excludeClassPrefix is that module's OWN hand-written job class's
-     * simple name (e.g. "ClickHouseMirrorJob") - all 5 modules share the
+     * simple name (e.g. "ClickHouseMirrorJob") - all 4 modules share the
      * exact same package (com.company.flinkjobs.cdcmirror) as each other
      * and as CdcMirrorSupport itself, so a package-prefix exclude would
      * also strip the shared support classes every module's jar legitimately
@@ -138,7 +138,6 @@ public class JavaJobBuildService {
         @Value("${platform.bigdata.java-build.sink-jar-clickhouse}") String sinkJarClickhouse,
         @Value("${platform.bigdata.java-build.sink-jar-oracle}") String sinkJarOracle,
         @Value("${platform.bigdata.java-build.sink-jar-mysql}") String sinkJarMysql,
-        @Value("${platform.bigdata.java-build.sink-jar-redis}") String sinkJarRedis,
         @Value("${platform.bigdata.java-build.sink-jar-doris}") String sinkJarDoris,
         @Value("${platform.bigdata.java-build.compile-only-jars}") String compileOnlyJars,
         @Value("${platform.bigdata.java-build.debug-run-extra-jars}") String debugRunExtraJars
@@ -148,7 +147,6 @@ public class JavaJobBuildService {
         configs.put("CLICKHOUSE", new SinkJarConfig(Path.of(sinkJarClickhouse), "ClickHouseMirrorJob"));
         configs.put("ORACLE", new SinkJarConfig(Path.of(sinkJarOracle), "OracleMirrorJob"));
         configs.put("MYSQL", new SinkJarConfig(Path.of(sinkJarMysql), "MySqlMirrorJob"));
-        configs.put("REDIS", new SinkJarConfig(Path.of(sinkJarRedis), "RedisMirrorJob"));
         configs.put("DORIS", new SinkJarConfig(Path.of(sinkJarDoris), "DorisMirrorJob"));
         this.sinkJarConfigs = configs;
         this.compileOnlyJarPaths = Arrays.stream(compileOnlyJars.split(",")).map(String::trim).filter(s -> !s.isEmpty()).map(Path::of).toList();
@@ -160,9 +158,9 @@ public class JavaJobBuildService {
 
     /**
      * targetType selects which pre-existing module jar gets used as the
-     * base for assembly - one of CLICKHOUSE/ORACLE/MYSQL/REDIS/DORIS for
+     * base for assembly - one of CLICKHOUSE/ORACLE/MYSQL/DORIS for
      * that module's own (single-driver, ~20-26MB) footprint, or null/blank/
-     * "ALL" to fall back to the buildkit jar (all five drivers merged,
+     * "ALL" to fall back to the buildkit jar (all four drivers merged,
      * ~38MB) for a job that genuinely needs more than one.
      */
     public CompileResult compileAndPackage(String className, String sourceCode, String targetType) {
@@ -266,7 +264,7 @@ public class JavaJobBuildService {
             // pipeline's internal record copying) fails with
             // InaccessibleObjectException on java.base internals under the
             // JDK 9+ module system, confirmed live: the job got as far as
-            // actually connecting to Redis before hitting this. A real
+            // actually connecting to its sink before hitting this. A real
             // cluster's JobManager/TaskManager processes already carry these
             // flags from Flink's own startup scripts; this bare subprocess
             // has to be told explicitly since nothing else supplies them.

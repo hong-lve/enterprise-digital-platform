@@ -5,10 +5,8 @@ import com.company.dataops.console.entity.DataSourceEntity;
 import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.security.ActionRateLimiter;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
-import com.company.dataops.console.service.datasource.RedisConnectionService;
 import com.company.dataops.console.service.query.ColumnView;
 import com.company.dataops.console.service.query.QueryResult;
-import com.company.dataops.console.service.query.RedisKeyView;
 import com.company.dataops.console.service.query.TableView;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -36,20 +34,18 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @RequestMapping("/realtime/query")
 public class RealtimeQueryController {
-    // Runs arbitrary user SQL/Redis commands against a live registered data
-    // source - same reasoning as FlinkSqlQueryController's limit.
+    // Runs arbitrary user SQL against a live registered data source - same
+    // reasoning as FlinkSqlQueryController's limit.
     private static final int MAX_EXECUTIONS_PER_WINDOW = 20;
     private static final Duration WINDOW = Duration.ofMinutes(1);
 
     private final DataSourceMapper dataSourceMapper;
     private final DataSourceConnectionService connectionService;
-    private final RedisConnectionService redisConnectionService;
     private final ActionRateLimiter rateLimiter;
 
-    public RealtimeQueryController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, RedisConnectionService redisConnectionService, ActionRateLimiter rateLimiter) {
+    public RealtimeQueryController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, ActionRateLimiter rateLimiter) {
         this.dataSourceMapper = dataSourceMapper;
         this.connectionService = connectionService;
-        this.redisConnectionService = redisConnectionService;
         this.rateLimiter = rateLimiter;
     }
 
@@ -57,13 +53,6 @@ public class RealtimeQueryController {
     @PreAuthorize("hasAuthority('realtime:query:execute')")
     public ApiResponse<List<TableView>> tables(@RequestParam Long dataSourceId, @RequestParam(required = false) String database) {
         DataSourceEntity dataSource = requireDataSource(dataSourceId);
-        // Redis has no table concept - the frontend skips this panel entirely
-        // for Redis data sources and goes straight to the command box, but
-        // returning an empty list rather than throwing keeps this endpoint
-        // harmless if it's ever called for one anyway.
-        if (isRedis(dataSource)) {
-            return ApiResponse.ok(List.of());
-        }
         return ApiResponse.ok(connectionService.tables(dataSource, database));
     }
 
@@ -71,9 +60,6 @@ public class RealtimeQueryController {
     @PreAuthorize("hasAuthority('realtime:query:execute')")
     public ApiResponse<List<ColumnView>> columns(@PathVariable String table, @RequestParam Long dataSourceId, @RequestParam(required = false) String database) {
         DataSourceEntity dataSource = requireDataSource(dataSourceId);
-        if (isRedis(dataSource)) {
-            return ApiResponse.ok(List.of());
-        }
         return ApiResponse.ok(connectionService.columns(dataSource, database, table));
     }
 
@@ -83,39 +69,7 @@ public class RealtimeQueryController {
         rateLimiter.assertWithinLimit("ratelimit:realtime-query-execute:" + authentication.getName(), MAX_EXECUTIONS_PER_WINDOW, WINDOW);
         int limit = request.limit() == null ? 200 : request.limit();
         DataSourceEntity dataSource = requireDataSource(request.dataSourceId());
-        // request.sql() doubles as "the Redis command line" when the data
-        // source is REDIS - same request shape, no separate endpoint/DTO,
-        // mirrors DebeziumConnectorConfigBuilder's dispatch-by-type style.
-        if (isRedis(dataSource)) {
-            return ApiResponse.ok(redisConnectionService.execute(dataSource, request.database(), request.sql(), limit));
-        }
         return ApiResponse.ok(connectionService.query(dataSource, request.database(), request.sql(), limit));
-    }
-
-    @GetMapping("/redis/keys")
-    @PreAuthorize("hasAuthority('realtime:query:execute')")
-    public ApiResponse<List<RedisKeyView>> redisKeys(@RequestParam Long dataSourceId, @RequestParam(required = false) String database, @RequestParam(required = false) String pattern) {
-        DataSourceEntity dataSource = requireDataSource(dataSourceId);
-        requireRedis(dataSource);
-        return ApiResponse.ok(redisConnectionService.listKeysWithMeta(dataSource, database, pattern, 200));
-    }
-
-    @GetMapping("/redis/value")
-    @PreAuthorize("hasAuthority('realtime:query:execute')")
-    public ApiResponse<QueryResult> redisValue(@RequestParam Long dataSourceId, @RequestParam(required = false) String database, @RequestParam String key) {
-        DataSourceEntity dataSource = requireDataSource(dataSourceId);
-        requireRedis(dataSource);
-        return ApiResponse.ok(redisConnectionService.getValue(dataSource, database, key));
-    }
-
-    private void requireRedis(DataSourceEntity dataSource) {
-        if (!isRedis(dataSource)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该数据源不是 Redis 类型");
-        }
-    }
-
-    private boolean isRedis(DataSourceEntity dataSource) {
-        return "REDIS".equalsIgnoreCase(dataSource.getType());
     }
 
     private DataSourceEntity requireDataSource(Long id) {

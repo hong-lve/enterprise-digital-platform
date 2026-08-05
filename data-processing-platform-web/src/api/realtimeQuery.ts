@@ -19,13 +19,6 @@ export interface QueryResult {
   rows: Array<Record<string, unknown>>;
 }
 
-export interface RedisKeyInfo {
-  key: string;
-  type: string;
-  /** -1 means no expiry, -2 means the key doesn't exist (shouldn't happen here since this always comes from a live SCAN). */
-  ttlSeconds: number;
-}
-
 function unwrap<T>(response: { data: ApiResponse<T> }) {
   return response.data.data;
 }
@@ -40,12 +33,4 @@ export function listRealtimeColumns(table: string, dataSourceId: number, databas
 
 export function executeRealtimeQuery(sql: string, dataSourceId: number, database?: string, limit = 200) {
   return http.post<ApiResponse<QueryResult>>('/realtime/query/execute', { sql, dataSourceId, database, limit }).then(unwrap);
-}
-
-export function listRedisKeys(dataSourceId: number, database?: string, pattern?: string) {
-  return http.get<ApiResponse<RedisKeyInfo[]>>('/realtime/query/redis/keys', { params: { dataSourceId, database, pattern } }).then(unwrap);
-}
-
-export function getRedisValue(dataSourceId: number, key: string, database?: string) {
-  return http.get<ApiResponse<QueryResult>>('/realtime/query/redis/value', { params: { dataSourceId, database, key } }).then(unwrap);
 }

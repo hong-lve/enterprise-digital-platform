@@ -80,7 +80,7 @@ export function DataQualityRulesPage() {
 
   useEffect(() => {
     load();
-    pageDataSources({ current: 1, pageSize: 200 }).then((data) => setDataSources(data.records.filter((item) => item.type !== 'REDIS')));
+    pageDataSources({ current: 1, pageSize: 200 }).then((data) => setDataSources(data.records));
   }, []);
 
   const dataSourceName = (id: number) => dataSources.find((d) => d.id === id)?.name ?? `#${id}`;
@@ -216,7 +216,7 @@ export function DataQualityRulesPage() {
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="例如：订单表主键重复检查" />
           </Form.Item>
-          <Form.Item name="dataSourceId" label="数据源" rules={[{ required: true, message: '请选择数据源' }]} extra="暂不支持 Redis">
+          <Form.Item name="dataSourceId" label="数据源" rules={[{ required: true, message: '请选择数据源' }]}>
             <Select showSearch optionFilterProp="label" options={dataSources.map((d) => ({ value: d.id, label: `${d.name}（${d.type}）` }))} />
           </Form.Item>
           <Form.Item name="databaseName" label="数据库/schema（留空使用数据源默认值）">

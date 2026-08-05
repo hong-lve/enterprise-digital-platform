@@ -435,9 +435,6 @@ export function FlinkSqlJobsPage() {
                         <Form.Item name="oracleSinkTables" label="Oracle 目标表" extra="逗号分隔——这个作业写入的 Oracle 表，用于实时血缘视图">
                           <Input placeholder="task_execution_stats" />
                         </Form.Item>
-                        <Form.Item name="redisSinkTables" label="Redis 目标表" extra="逗号分隔——这个作业写入的 Redis 表，用于实时血缘视图">
-                          <Input placeholder="sql_job_demo_source" />
-                        </Form.Item>
                       </>
                     )
                   }

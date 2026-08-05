@@ -11,7 +11,6 @@ import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.security.EnvironmentGuard;
 import com.company.dataops.console.service.approval.ChangeApprovalService;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
-import com.company.dataops.console.service.datasource.RedisConnectionService;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.HttpStatus;
@@ -32,21 +31,15 @@ import org.springframework.web.server.ResponseStatusException;
 public class DataSourceController {
     private final DataSourceMapper dataSourceMapper;
     private final DataSourceConnectionService connectionService;
-    private final RedisConnectionService redisConnectionService;
     private final EnvironmentGuard environmentGuard;
     private final ChangeApprovalService changeApprovalService;
 
-    public DataSourceController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, RedisConnectionService redisConnectionService, EnvironmentGuard environmentGuard, ChangeApprovalService changeApprovalService) {
+    public DataSourceController(DataSourceMapper dataSourceMapper, DataSourceConnectionService connectionService, EnvironmentGuard environmentGuard, ChangeApprovalService changeApprovalService) {
         this.dataSourceMapper = dataSourceMapper;
         this.connectionService = connectionService;
-        this.redisConnectionService = redisConnectionService;
         this.environmentGuard = environmentGuard;
         this.changeApprovalService = changeApprovalService;
         changeApprovalService.register(ChangeApprovalService.ActionType.DATA_SOURCE_DELETE, this::applyDelete);
-    }
-
-    private boolean isRedis(DataSourceEntity dataSource) {
-        return "REDIS".equalsIgnoreCase(dataSource.getType());
     }
 
     @GetMapping
@@ -127,14 +120,14 @@ public class DataSourceController {
     @PreAuthorize("hasAuthority('realtime:datasource:test')")
     public ApiResponse<DataSourceEntity> test(@PathVariable Long id) {
         DataSourceEntity dataSource = requireDataSource(id);
-        return ApiResponse.ok(isRedis(dataSource) ? redisConnectionService.testConnection(dataSource) : connectionService.testConnection(dataSource));
+        return ApiResponse.ok(connectionService.testConnection(dataSource));
     }
 
     @GetMapping("/{id}/databases")
     @PreAuthorize("hasAuthority('realtime:datasource:view')")
     public ApiResponse<List<String>> databases(@PathVariable Long id) {
         DataSourceEntity dataSource = requireDataSource(id);
-        return ApiResponse.ok(isRedis(dataSource) ? redisConnectionService.listDatabases(dataSource) : connectionService.listDatabases(dataSource));
+        return ApiResponse.ok(connectionService.listDatabases(dataSource));
     }
 
     private DataSourceEntity requireDataSource(Long id) {

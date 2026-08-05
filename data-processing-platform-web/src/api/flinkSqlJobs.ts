@@ -31,8 +31,6 @@ export interface FlinkSqlJobRecord {
   dorisSinkTables?: string;
   /** Optional, comma-separated - Oracle tables this job writes to (via 'connector'='jdbc'), for the lineage view. See V19__flink_sql_job_oracle_sink.sql. */
   oracleSinkTables?: string;
-  /** Optional, comma-separated - Redis tables this job writes to (via 'connector'='redis'), for the lineage view. See V21__flink_sql_job_redis_sink.sql. */
-  redisSinkTables?: string;
   /** DEV/STAGING/PROD - logical tag only, see V9__environment_field.sql. */
   environment: string;
   owner?: string;

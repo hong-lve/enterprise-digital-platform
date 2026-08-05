@@ -8,13 +8,13 @@
     Not a job itself - the runtime classpath data-processing-platform-service's
     JavaJobBuildService bundles into every jar it compiles from a user's
     online-edited Java source (see 数据平台/JAR 包管理's "在线编写" flow).
-    Same dependency set as the five cdc-mirror-* sink modules (so a
-    hand-written custom mirror job can reuse CdcMirrorSupport, Kafka, JDBC
-    drivers, or Jedis exactly like they do) merged into one jar via the
+    Same dependency set as the four cdc-mirror-* sink modules (so a
+    hand-written custom mirror job can reuse CdcMirrorSupport, Kafka, or the
+    JDBC drivers exactly like they do) merged into one jar via the
     shade plugin below with no Main-Class - it's a library to fold into a
     user's compiled .class file(s) at build time, not something run on its
     own. flink-streaming-java/flink-clients stay `provided` (excluded from
-    the shaded output) for the same reason those five modules exclude them:
+    the shaded output) for the same reason those four modules exclude them:
     the Flink cluster's own lib/ already supplies those classes to every job.
   -->
 
@@ -62,11 +62,6 @@
       <groupId>com.oracle.database.jdbc</groupId>
       <artifactId>ojdbc11</artifactId>
       <version>23.9.0.25.07</version>
-    </dependency>
-    <dependency>
-      <groupId>redis.clients</groupId>
-      <artifactId>jedis</artifactId>
-      <version>5.1.5</version>
     </dependency>
   </dependencies>
 

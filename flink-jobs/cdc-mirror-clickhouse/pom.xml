@@ -5,11 +5,11 @@
   <modelVersion>4.0.0</modelVersion>
 
   <!--
-    One of five sibling modules (cdc-mirror-clickhouse/oracle/mysql/redis/
-    doris) split out of what used to be a single cdc-mirror-job jar with
-    five main classes - each now ships as its own independently deployable
+    One of four sibling modules (cdc-mirror-clickhouse/oracle/mysql/doris)
+    split out of what used to be a single cdc-mirror-job jar with
+    several main classes - each now ships as its own independently deployable
     jar, pulling in only its own sink's JDBC/client driver instead of every
-    driver from all five sinks bundled together. Shared Kafka+Debezium
+    driver from all the sinks bundled together. Shared Kafka+Debezium
     parsing lives in cdc-mirror-common (must be `mvn install`ed first).
   -->
 

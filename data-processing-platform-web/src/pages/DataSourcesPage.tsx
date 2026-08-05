@@ -30,7 +30,6 @@ const typeOptions: Array<{ value: DataSourceType; label: string }> = [
   { value: 'CLICKHOUSE', label: 'ClickHouse' },
   { value: 'DORIS', label: 'Doris' },
   { value: 'ORACLE', label: 'Oracle' },
-  { value: 'REDIS', label: 'Redis' }
 ];
 
 // Logical tags only - see V9__environment_field.sql.
@@ -217,11 +216,6 @@ export function DataSourcesPage() {
               Oracle 实例跑在本环境 Docker 里（gvenzl/oracle-free），CDC 数据源和 SQL 流作业 sink 都已经打通。作为 CDC 数据源时，"地址/端口"填这里的 JVM 能连到的地址（通常 localhost），"Flink 可达地址"填 Docker 网络里的服务名（oracle），"默认库"填 CDB 根服务名（如 FREE），下面的 PDB 名称填实际要监控的可插拔数据库（如 FREEPDB1）。
             </Typography.Paragraph>
           )}
-          {selectedType === 'REDIS' && (
-            <Typography.Paragraph type="secondary">
-              Redis 不是 JDBC/SQL 可查询的数据源，"默认库"这里不用填——实时数据查询页选的是 Redis 的编号逻辑库（0-15），不是名字。用户名填 default（本环境只配置了 requirepass，没有额外的 ACL 用户），密码是 requirepass 的值。"Flink 可达地址"用于以后把 Redis 配成 SQL 流作业的 sink 目标。
-            </Typography.Paragraph>
-          )}
           <Form.Item name="host" label="地址" rules={[{ required: true, message: '请输入地址' }]} extra="本服务自己进程能连到的地址">
             <Input placeholder="localhost" />
           </Form.Item>
@@ -247,7 +241,7 @@ export function DataSourcesPage() {
             label="Flink 可达地址"
             extra="仅 SQL 流作业生成 sink 配置时用 - Flink 集群容器连这个数据源要走的地址（跟上面的地址不同才需要填，MySQL 通常不需要）"
           >
-            <Input placeholder="clickhouse / doris / redis" />
+            <Input placeholder="clickhouse / doris" />
           </Form.Item>
           <Form.Item name="flinkPort" label="Flink 端口">
             <InputNumber min={1} max={65535} style={{ width: '100%' }} />

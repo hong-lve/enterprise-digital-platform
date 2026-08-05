@@ -205,7 +205,7 @@ export function ReconciliationPage() {
       >
         <Form form={form} layout="vertical" onFinish={submit}>
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
-            <Input placeholder="例如：MySQL 订单 -> Redis 对账" />
+            <Input placeholder="例如：MySQL 订单 -> ClickHouse 对账" />
           </Form.Item>
           <Typography.Text type="secondary">源（CDC 数据源指向的原始表）</Typography.Text>
           <Form.Item name="sourceDataSourceId" label="源数据源" rules={[{ required: true, message: '请选择源数据源' }]} style={{ marginTop: 8 }}>
@@ -229,16 +229,15 @@ export function ReconciliationPage() {
               options={dataSources.map((d) => ({ value: d.id, label: `${d.name}（${d.type}）` }))}
             />
           </Form.Item>
-          <Form.Item name="targetDatabase" label="目标数据库/schema（留空使用数据源默认值，Redis 不需要填）">
+          <Form.Item name="targetDatabase" label="目标数据库/schema（留空使用数据源默认值）">
             <Input placeholder="例如：realtime_analytics" />
           </Form.Item>
           <Form.Item
             name="targetTable"
-            label="目标表名 / Redis key 匹配规则"
+            label="目标表名"
             rules={[{ required: true, message: '请输入目标表名或 key 匹配规则' }]}
-            extra="目标是 Redis 时这里填 key 的匹配规则，例如 test_orders_mysql_redis_sink:*"
           >
-            <Input placeholder="例如：test_orders_mysql_ch_sink 或 test_orders_mysql_redis_sink:*" />
+            <Input placeholder="例如：test_orders_mysql_ch_sink" />
           </Form.Item>
           <Form.Item name="checkType" label="对账方式" rules={[{ required: true }]}>
             <Select

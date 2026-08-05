@@ -10,7 +10,7 @@ export interface ReconciliationCheckRecord {
   sourceTable: string;
   targetDataSourceId: number;
   targetDatabase?: string;
-  /** Table name for a JDBC target; a Redis key pattern (e.g. "prefix:*") for a Redis target. */
+  /** Table name for the JDBC target. */
   targetTable: string;
   tolerance: number;
   enabled: boolean;

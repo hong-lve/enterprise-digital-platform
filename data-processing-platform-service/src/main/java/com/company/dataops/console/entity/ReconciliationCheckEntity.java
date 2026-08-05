@@ -20,11 +20,9 @@ public class ReconciliationCheckEntity {
     @NotNull(message = "请选择目标数据源")
     private Long targetDataSourceId;
     private String targetDatabase;
-    // Table name for a JDBC target (ClickHouse/MySQL/Oracle/Doris); a Redis
-    // key pattern (e.g. "test_orders_mysql_redis_sink:*") for a Redis
-    // target, since Redis has no table concept - see
+    // Table name for a JDBC target (ClickHouse/MySQL/Oracle/Doris) - see
     // DataReconciliationService.countTarget().
-    @NotBlank(message = "目标表名/Key 匹配规则不能为空")
+    @NotBlank(message = "目标表名不能为空")
     private String targetTable;
     private Integer tolerance;
     private Boolean enabled;

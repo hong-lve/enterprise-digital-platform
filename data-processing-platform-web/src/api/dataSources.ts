@@ -2,7 +2,7 @@ import { http } from './http';
 import type { ApiResponse } from './auth';
 import type { PageResult } from './cdcSources';
 
-export type DataSourceType = 'MYSQL' | 'CLICKHOUSE' | 'DORIS' | 'ORACLE' | 'REDIS';
+export type DataSourceType = 'MYSQL' | 'CLICKHOUSE' | 'DORIS' | 'ORACLE';
 
 export interface DataSourceRecord {
   id: number;

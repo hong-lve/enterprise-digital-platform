@@ -17,13 +17,13 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 /**
- * Shared Kafka+Debezium plumbing for the five cdc-mirror-* sink modules
- * (cdc-mirror-clickhouse/oracle/mysql/redis/doris) - each only differs in
- * how it writes a row out (JDBC dialect, upsert syntax, or Jedis for
- * Redis), so the source-side setup and Debezium envelope parsing live here
- * once instead of five times. Public (not package-private the way a
- * single-jar version of this would keep it) since the five sink modules
- * are now separate jars depending on this one as a library, not five
+ * Shared Kafka+Debezium plumbing for the four cdc-mirror-* sink modules
+ * (cdc-mirror-clickhouse/oracle/mysql/doris) - each only differs in
+ * how it writes a row out (JDBC dialect, upsert syntax), so the
+ * source-side setup and Debezium envelope parsing live here
+ * once instead of four times. Public (not package-private the way a
+ * single-jar version of this would keep it) since the four sink modules
+ * are now separate jars depending on this one as a library, not four
  * classes compiled together into one jar. Column set is fixed to the
  * test_orders_* demo schema (id/order_no/amount/status/created_at) - this
  * mirrors CdcTableSchemaService's declared Flink types for that schema
@@ -125,7 +125,7 @@ public final class CdcMirrorSupport {
      * is upper-case). Skips delete/tombstone records (op != c/u/r) the same
      * way TaskStatsJob does - a mirror job has nothing meaningful to write
      * for a delete without also implementing a delete-aware sink, which
-     * none of these five need for this demo schema. Unlike the JSON
+     * none of these four need for this demo schema. Unlike the JSON
      * envelope (which nests op/after under a "payload" key alongside a
      * sibling "schema" key), Avro has no such wrapper - the schema lives in
      * the registry instead, so op/after sit directly on the decoded record.

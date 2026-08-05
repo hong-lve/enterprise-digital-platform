@@ -200,7 +200,6 @@ public class FlinkSqlLineageParser {
             case "kafka", "upsert-kafka" -> properties.getOrDefault("topic", "-");
             case "jdbc" -> properties.getOrDefault("table-name", "-");
             case "doris" -> properties.getOrDefault("table.identifier", "-");
-            case "redis" -> "key-prefix=" + properties.getOrDefault("key-prefix", "-");
             default -> properties.isEmpty() ? "-" : properties.toString();
         };
         return new TableLineage(tableName, connector, physicalLocation, columns);

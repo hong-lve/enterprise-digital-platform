@@ -48,7 +48,7 @@ public class JarEntryClassScanner {
         "org.apache.", "org.antlr.", "org.xerial.", "net.jpountz.", "oracle.",
         "com.clickhouse.", "io.netty.", "com.fasterxml.", "org.springframework.",
         "org.slf4j.", "ch.qos.", "com.google.", "com.zaxxer.", "org.postgresql.",
-        "com.mysql.", "redis.clients.", "io.lettuce.", "org.rocksdb.", "io.confluent.",
+        "com.mysql.", "org.rocksdb.", "io.confluent.",
         "javax.", "java.", "jdk.", "sun.", "com.sun."
     );
 

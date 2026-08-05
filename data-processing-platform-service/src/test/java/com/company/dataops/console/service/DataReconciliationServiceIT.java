@@ -11,7 +11,6 @@ import com.company.dataops.console.entity.ReconciliationCheckEntity;
 import com.company.dataops.console.mapper.DataSourceMapper;
 import com.company.dataops.console.mapper.ReconciliationCheckMapper;
 import com.company.dataops.console.service.datasource.DataSourceConnectionService;
-import com.company.dataops.console.service.datasource.RedisConnectionService;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
@@ -59,7 +58,6 @@ class DataReconciliationServiceIT {
             mock(ReconciliationCheckMapper.class),
             dataSourceMapper,
             new DataSourceConnectionService(dataSourceMapper),
-            mock(RedisConnectionService.class),
             mock(RealtimeAlertService.class));
 
         DataSourceEntity source = mysqlDataSource(1L, sourceDb);

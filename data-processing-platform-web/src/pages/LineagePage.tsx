@@ -31,7 +31,6 @@ const sinkTypeLabel: Record<string, string> = {
   CLICKHOUSE: 'ClickHouse 表',
   DORIS: 'Doris 表',
   ORACLE: 'Oracle 表',
-  REDIS: 'Redis 表',
   MYSQL: 'MySQL 表'
 };
 

@@ -49,12 +49,10 @@ public class FlinkSqlJobEntity {
     private Long consumerLagRecords;
     private String consumerLagAlertState;
     // Optional, comma-separated - see V11__flink_sql_job_clickhouse_sink.sql,
-    // V12__flink_sql_job_doris_sink.sql, V19__flink_sql_job_oracle_sink.sql
-    // and V21__flink_sql_job_redis_sink.sql.
+    // V12__flink_sql_job_doris_sink.sql and V19__flink_sql_job_oracle_sink.sql.
     private String clickhouseSinkTables;
     private String dorisSinkTables;
     private String oracleSinkTables;
-    private String redisSinkTables;
     private String environment;
     private Long clusterId;
     private String owner;

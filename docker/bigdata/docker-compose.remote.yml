@@ -255,13 +255,6 @@ services:
         # out of the box (see clickhouse-jdbc-dialect's own pom.xml comment),
         # so only the driver jar itself was missing, no custom dialect module
         # needed.
-      - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
-        # Built from flink-connectors/redis-table-sink - unlike the other four
-        # sink types, Redis isn't JDBC-queryable at all, so this can't reuse
-        # flink-connector-jdbc; it's a standalone 'connector'='redis' Table
-        # API sink (Sink V2 + Jedis) written from scratch, since the only
-        # existing community option (Apache Bahir's flink-connector-redis) is
-        # DataStream-API-only with no Table/SQL connector factory.
 
   flink-taskmanager:
     image: flink:1.19-java17
@@ -309,7 +302,6 @@ services:
       - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
       - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
       - ./flink-lib/ojdbc11-23.9.0.25.07.jar:/opt/flink/lib/ojdbc11-23.9.0.25.07.jar:ro
-      - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
 
   # ---------- Flink SQL Gateway (interactive SQL queries against Kafka topics) ----------
   # Submits in "remote" execution mode against the existing flink-jobmanager
@@ -367,7 +359,6 @@ services:
       - ./flink-lib/flink-doris-connector-1.19-1.6.2.jar:/opt/flink/lib/flink-doris-connector-1.19-1.6.2.jar:ro
       - ./flink-lib/mysql-connector-j-8.3.0.jar:/opt/flink/lib/mysql-connector-j-8.3.0.jar:ro
       - ./flink-lib/ojdbc11-23.9.0.25.07.jar:/opt/flink/lib/ojdbc11-23.9.0.25.07.jar:ro
-      - ./flink-lib/redis-table-sink-0.1.0.jar:/opt/flink/lib/redis-table-sink-0.1.0.jar:ro
 
   # ---------- Kafka (KRaft mode, single node, no separate Zookeeper) ----------
   # This is only for the data-processing-platform-service CDC pipeline (Debezium ->
@@ -610,8 +601,8 @@ services:
     volumes:
       - oracle-data:/opt/oracle/oradata
 
-  # ---------- Redis (Flink/SQL 流作业 sink target + "数据源配置/实时数据
-  # 查询" 里的 Redis 类型) ----------
+  # ---------- Redis (平台自身的状态存储：登录限流 / 2FA 待确认登录 /
+  # data-service-platform-service 的查询缓存；不再作为数据源或 sink 目标) ----------
   # Single node, requirepass only (no ACL users beyond the built-in "default"
   # user) - matches this environment's "functional testing, not production"
   # scope, same as every other data store here. appendonly enabled so a

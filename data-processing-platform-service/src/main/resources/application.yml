@@ -186,7 +186,6 @@ platform:
       sink-jar-clickhouse: ${JAVA_BUILD_SINK_JAR_CLICKHOUSE:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-clickhouse/target/cdc-mirror-clickhouse.jar}
       sink-jar-oracle: ${JAVA_BUILD_SINK_JAR_ORACLE:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-oracle/target/cdc-mirror-oracle.jar}
       sink-jar-mysql: ${JAVA_BUILD_SINK_JAR_MYSQL:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-mysql/target/cdc-mirror-mysql.jar}
-      sink-jar-redis: ${JAVA_BUILD_SINK_JAR_REDIS:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-redis/target/cdc-mirror-redis.jar}
       sink-jar-doris: ${JAVA_BUILD_SINK_JAR_DORIS:D:/workspace/projectspace/enterprise-digital-platform/flink-jobs/cdc-mirror-doris/target/cdc-mirror-doris.jar}
       # Minimal classpath actually needed for javac to resolve everything a
       # cdc-mirror-* style job imports (StreamExecutionEnvironment,
